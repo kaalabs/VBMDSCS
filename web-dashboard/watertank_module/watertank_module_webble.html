@@ -145,6 +145,17 @@
     <div id="log" class="log"></div>
   </div>
 
+  <div class="card expert">
+    <div class="row" style="gap:8px;">
+      <strong>Service</strong>
+      <span class="muted">—</span>
+    </div>
+    <div class="row" style="gap:8px; margin-top:6px;">
+      <button id="btnCfgReset" class="btn-amber">Reset config</button>
+      <button id="btnExportLog">Export log</button>
+    </div>
+  </div>
+
 <script>
   // UUID's
   const UART_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
@@ -178,6 +189,8 @@
     userHintBox: document.getElementById('userHintBox'),
     userHintDot: document.getElementById('userHintDot'),
     userHint: document.getElementById('userHint'),
+    btnCfgReset: document.getElementById('btnCfgReset'),
+    btnExportLog: document.getElementById('btnExportLog'),
   };
 
   let device=null, server=null, rxChar=null, txChar=null, buffer='';
@@ -195,6 +208,15 @@
     div.textContent = '[' + now() + '] ' + line;
     ui.log.prepend(div);
     while (ui.log.children.length > 300) ui.log.removeChild(ui.log.lastChild);
+  }
+
+  function exportLog(){
+    const lines = Array.from(ui.log.children).reverse().map(n => n.textContent);
+    const blob = new Blob([lines.join('\n')], {type: 'text/plain'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'watertank_log.txt'; a.click();
+    URL.revokeObjectURL(url);
   }
 
   function setConn(state) {
@@ -272,6 +294,17 @@
     txChar.addEventListener('characteristicvaluechanged', onNotify);
   }
 
+  async function chooseAndConnect(){
+    const dev = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [UART_SERVICE] });
+    device = dev; device.addEventListener('gattserverdisconnected', onDisc);
+    server = await device.gatt.connect();
+    await setupGatt();
+    setConn('connected'); enableCmds(true);
+    log('Verbonden met ' + (device.name || 'apparaat'));
+    sendCmd('INFO?'); sendCmd('CFG?');
+    if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+  }
+
   async function connect(){
     try{
       // Als we al een device hebben, probeer direct te verbinden zonder prompt
@@ -280,10 +313,18 @@
         device.removeEventListener && device.removeEventListener('gattserverdisconnected', onDisc);
         device.addEventListener('gattserverdisconnected', onDisc);
         if (!device.gatt.connected) {
-          server = await device.gatt.connect();
-          await setupGatt();
-          setConn('connected'); enableCmds(true);
-          log('Opnieuw verbonden met ' + (device.name || 'apparaat'));
+          try {
+            server = await device.gatt.connect();
+            await setupGatt();
+            setConn('connected'); enableCmds(true);
+            log('Opnieuw verbonden met ' + (device.name || 'apparaat'));
+          } catch (e) {
+            // Fallback: device-object ongeldig; kies opnieuw via chooser
+            log('Herverbinden met bestaand device mislukt, open chooser…', 'warn');
+            device = null; server = null; rxChar = null; txChar = null;
+            await chooseAndConnect();
+            return;
+          }
         } else {
           setConn('connected'); enableCmds(true);
         }
@@ -294,14 +335,7 @@
       // Anders: vraag de gebruiker om een device te kiezen (zonder service-filter in advertentie)
       // Sommige firmwares adverteren de service UUID niet in de advertising payload.
       // Gebruik acceptAllDevices + optionalServices om later de UART service te openen.
-      const dev = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [UART_SERVICE] });
-      device = dev; device.addEventListener('gattserverdisconnected', onDisc);
-      server = await device.gatt.connect();
-      await setupGatt();
-      setConn('connected'); enableCmds(true);
-      log('Verbonden met ' + (device.name || 'apparaat'));
-      sendCmd('INFO?'); sendCmd('CFG?');
-      if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+      await chooseAndConnect();
     }catch(e){ log('Connectie mislukt: ' + (e.message||e), 'error'); }
   }
 
@@ -309,6 +343,8 @@
     if (!device) return;
     try{
       if (!device.gatt.connected) {
+        // Workaround: some browsers need a tiny delay before reconnect
+        await delay(150);
         server = await device.gatt.connect();
         await setupGatt();
         setConn('connected'); enableCmds(true);
@@ -357,6 +393,9 @@
         // Test events/status
         if (o.evt === 'test') {
           log('TEST: ' + (o.msg || JSON.stringify(o)), 'warn');
+        }
+        if (o.evt === 'sys') {
+          log('SYS: ' + (o.msg || JSON.stringify(o)) + (o.err ? (' err=' + o.err) : ''), 'warn');
         }
         if ('test_active' in o) {
           const active = !!o.test_active;
@@ -412,6 +451,8 @@
   ui.stepBack.addEventListener('click', backStep);
   ui.stepCancel.addEventListener('click', cancelSteps);
   ui.modeExpert.addEventListener('change', applyMode);
+  ui.btnCfgReset.addEventListener('click', () => { if (confirm('Weet je zeker dat je de configuratie wilt resetten naar defaults?')) sendCmd('CFG RESET'); });
+  ui.btnExportLog.addEventListener('click', exportLog);
 
   // Init
   setConn('idle'); setStateBadge('—'); setReadyBadge(null); updateGauge(null);

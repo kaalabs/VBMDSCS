@@ -303,7 +303,11 @@ class SimpleBLE:
         UART_SERVICE = (UART_UUID, (UART_TX, UART_RX))
         ((self.tx_handle, self.rx_handle),) = self.ble.gatts_register_services((UART_SERVICE,))
         self.connections = set()
-        self.ble.gap_advertise(100_000, adv_data=self._adv_payload(name=name))
+        # Start advertising helper to allow reuse after disconnect
+        try:
+            self.ble.gap_advertise(100_000, adv_data=self._adv_payload(name=self.name))
+        except Exception:
+            pass
 
     def _adv_payload(self, name=None):
         payload = bytearray(b"")
@@ -319,7 +323,10 @@ class SimpleBLE:
         elif event == 2:  # disconnect
             conn_handle, _, _ = data
             self.connections.discard(conn_handle)
-            self.ble.gap_advertise(100_000, adv_data=self._adv_payload(name=self.name))
+            try:
+                self.ble.gap_advertise(100_000, adv_data=self._adv_payload(name=self.name))
+            except Exception:
+                pass
         elif event == 3:  # write
             conn_handle, value_handle = data
             if value_handle == self.rx_handle:
@@ -446,6 +453,15 @@ class WaterModule:
             self.cfg["cal_full_mm"] = None
             save_config(self.cfg)
             if self.ble: self.ble.notify("CAL CLEARED")
+        elif cmd == "CFG RESET":
+            # Restore defaults and persist. Running peripherals keep current init.
+            self.cfg = DEFAULT_CONFIG.copy()
+            save_config(self.cfg)
+            if self.ble:
+                try:
+                    self.ble.notify(json.dumps({"evt":"sys","msg":"cfg_reset_ok"}))
+                except Exception:
+                    pass
         else:
             if self.ble: self.ble.notify("ERR CMD")
 
