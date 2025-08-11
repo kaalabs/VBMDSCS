@@ -30,6 +30,7 @@ import machine
 import time
 import sys
 from machine import UART, Pin, WDT
+import math
 
 try:
     import bluetooth
@@ -408,7 +409,8 @@ class WaterModule:
     def _apply_outputs(self, state):
         # Active-LOW logic: 0=allow/run, 1=safe-stop
         allow_pump   = (state == STATE_OK) or (self.cfg.get("allow_pump_at_low", True) and state == STATE_LOW)
-        allow_heater = (state == STATE_OK)  # heater off already at LOW
+        allow_heater = (state == STATE_OK)  
+        # heater off already at LOW
         # Master interlock by state policy:
         #  - ON for OK and LOW (so pump may run at LOW if enabled)
         #  - OFF for BOTTOM and FAULT
