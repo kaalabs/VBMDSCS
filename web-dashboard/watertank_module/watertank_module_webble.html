@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VBM Domobar Waterniveau — Pure CSS Dashboard</title>
+  <!--
+    Pure CSS + vanilla JS variant (geen externe frameworks of libraries)
+    - Web Bluetooth Nordic UART UUID's
+      * Service: 6e400001-b5a3-f393-e0a9-e50e24dcca9e
+      * RX (write): 6e400002-b5a3-f393-e0a9-e50e24dcca9e
+      * TX (notify):6e400003-b5a3-f393-e0a9-e50e24dcca9e
+  -->
+  <style>
+    :root {
+      --bg: #f9fafb; --ink:#111; --muted:#6b7280; --ring:#e5e7eb;
+      --good:#16a34a; --warn:#f59e0b; --bad:#ef4444; --blue:#2563eb;
+      --card:#fff; --shadow: 0 1px 3px rgba(0,0,0,.08);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink);
+           font-family: Arial, Helvetica, sans-serif; font-size: 14px; }
+    h1 { margin: 0 0 8px 0; font-size: 22px; }
+    .muted { color: var(--muted); }
+    .card { background: var(--card); border: 1px solid #0001; border-radius: 10px; padding: 12px; margin-bottom: 12px; box-shadow: var(--shadow); }
+    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .space { justify-content: space-between; }
+    button { appearance: none; border: none; border-radius: 8px; padding: 8px 10px; background: #333; color: #fff; cursor: pointer; font-weight: 600; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-blue { background: var(--blue); }
+    .btn-amber { background: var(--warn); color: #111; }
+    label { display: inline-flex; align-items: center; gap: 6px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-weight: 700; font-size: 12px; border: 1px solid var(--ring); }
+    .b-gray { background: #f3f4f6; color: #374151; }
+    .b-green { background: #dcfce7; color: #166534; }
+    .b-yellow { background: #fef9c3; color: #854d0e; }
+    .b-red { background: #fee2e2; color: #991b1b; }
+
+    .bar { width: 100%; height: 12px; background: #eef2ff; border-radius: 6px; overflow: hidden; }
+    .bar > div { height: 100%; width: 0%; transition: width .2s; }
+    .tone-green { background: var(--good); }
+    .tone-yellow { background: var(--warn); }
+    .tone-red { background: var(--bad); }
+
+    pre { background: #f3f4f6; border-radius: 8px; padding: 8px; overflow: auto; }
+    .log { background: #f3f4f6; border-radius: 8px; padding: 8px; height: 200px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+
+    /* Inline steps */
+    .steps { border: 1px dashed var(--ring); border-radius: 8px; padding: 10px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>VBM Domobar Waterniveau</h1>
+
+  <div class="card">
+    <div class="row">
+      <button id="btnConnect" class="btn-blue">Verbinden</button>
+      <button id="btnDisconnect" disabled>Verbreken</button>
+      <label><input type="checkbox" id="autoReconnect" checked> Auto-reconnect</label>
+      <span id="connBadge" class="badge b-gray">idle</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row space">
+      <strong>Status</strong>
+      <span id="stateBadge" class="badge b-gray">—</span>
+    </div>
+    <div class="row space">
+      <span>Waterniveau</span>
+      <span id="pct">—</span>
+    </div>
+    <div class="bar" id="lvlBar"><div id="lvlFill"></div></div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="gap:8px;">
+      <button class="cmd" data-cmd="INFO?" disabled>INFO?</button>
+      <button class="cmd" data-cmd="CFG?" disabled>CFG?</button>
+      <button class="cmd btn-blue" data-cmd="CAL FULL" disabled>CAL FULL</button>
+      <button class="cmd btn-blue" data-cmd="CAL EMPTY" disabled>CAL EMPTY</button>
+      <button class="cmd btn-amber" data-cmd="CAL CLEAR" disabled>CAL CLEAR</button>
+      <button id="btnAutoCal" class="btn-blue" disabled>Auto-Calibratie</button>
+    </div>
+
+    <!-- Inline stappenpaneel -->
+    <div id="stepsPanel" class="steps hidden" style="margin-top:8px;">
+      <div class="row space">
+        <strong>Auto-calibratie</strong>
+        <span id="stepBadge" class="badge b-gray">Stap 1/2</span>
+      </div>
+      <div id="stepMsg" class="muted" style="margin:6px 0 8px 0;">Vul de tank volledig en wacht tot het niveau stabiel is. Klik op “Markeer FULL”.</div>
+      <div class="row" style="gap:8px;">
+        <button id="stepBack" disabled>Terug</button>
+        <button id="stepCancel" class="btn-amber">Annuleren</button>
+        <button id="stepNext" class="btn-blue">Markeer FULL</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <strong>Laatst ontvangen CFG/INFO</strong>
+    <pre id="cfgDump">—</pre>
+  </div>
+
+  <div class="card">
+    <strong>Event Log</strong>
+    <div id="log" class="log"></div>
+  </div>
+
+<script>
+  // UUID's
+  const UART_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+  const UART_RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // write
+  const UART_TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // notify
+
+  // UI refs
+  const ui = {
+    btnConnect: document.getElementById('btnConnect'),
+    btnDisconnect: document.getElementById('btnDisconnect'),
+    autoReconnect: document.getElementById('autoReconnect'),
+    connBadge: document.getElementById('connBadge'),
+    stateBadge: document.getElementById('stateBadge'),
+    pct: document.getElementById('pct'),
+    lvlFill: document.getElementById('lvlFill'),
+    cmds: Array.from(document.querySelectorAll('.cmd')),
+    btnAutoCal: document.getElementById('btnAutoCal'),
+    stepsPanel: document.getElementById('stepsPanel'),
+    stepBadge: document.getElementById('stepBadge'),
+    stepMsg: document.getElementById('stepMsg'),
+    stepBack: document.getElementById('stepBack'),
+    stepCancel: document.getElementById('stepCancel'),
+    stepNext: document.getElementById('stepNext'),
+    cfgDump: document.getElementById('cfgDump'),
+    log: document.getElementById('log'),
+  };
+
+  let device=null, server=null, rxChar=null, txChar=null, buffer='';
+
+  function now() { return new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+  function log(line, kind) {
+    const div = document.createElement('div');
+    if (kind === 'error') div.style.color = '#991b1b';
+    else if (kind === 'warn') div.style.color = '#92400e';
+    else if (kind === 'send') div.style.color = '#1e40af';
+    div.textContent = '[' + now() + '] ' + line;
+    ui.log.prepend(div);
+    while (ui.log.children.length > 300) ui.log.removeChild(ui.log.lastChild);
+  }
+
+  function setConn(state) {
+    ui.connBadge.textContent = state;
+    ui.connBadge.className = 'badge ' + (state === 'connected' ? 'b-green' : 'b-gray');
+  }
+
+  function setStateBadge(st) {
+    const map = { OK: 'b-green', LOW: 'b-yellow', BOTTOM: 'b-red', FAULT: 'b-red' };
+    ui.stateBadge.textContent = st || '—';
+    ui.stateBadge.className = 'badge ' + (map[st] || 'b-gray');
+    ui.lvlFill.className = '';
+    if (st === 'OK') ui.lvlFill.classList.add('tone-green');
+    else if (st === 'LOW') ui.lvlFill.classList.add('tone-yellow');
+    else if (st === 'BOTTOM') ui.lvlFill.classList.add('tone-red');
+  }
+
+  function updateGauge(pct) {
+    const v = (typeof pct === 'number') ? Math.max(0, Math.min(100, pct)) : null;
+    ui.pct.textContent = (v == null) ? '—' : v.toFixed(1) + '%';
+    ui.lvlFill.style.width = (v == null) ? '0%' : v + '%';
+  }
+
+  function* extractJson(stream){ let d=0,s=-1; for(let i=0;i<stream.length;i++){ const c=stream[i]; if(c==='{' ){ if(d===0) s=i; d++; } else if(c==='}'){ d--; if(d===0 && s!==-1){ yield stream.slice(s,i+1); s=-1; } } } }
+
+  function enableCmds(on) { ui.cmds.forEach(b => b.disabled = !on); ui.btnAutoCal.disabled = !on; }
+  async function sendCmd(txt){ if(!rxChar) return; await rxChar.writeValue(new TextEncoder().encode(txt)); log('> '+txt, 'send'); }
+
+  async function connect(){
+    try{
+      const dev = await navigator.bluetooth.requestDevice({ filters:[{ services:[UART_SERVICE] }], optionalServices:[UART_SERVICE] });
+      device = dev; device.addEventListener('gattserverdisconnected', onDisc);
+      server = await device.gatt.connect();
+      const svc = await server.getPrimaryService(UART_SERVICE);
+      txChar = await svc.getCharacteristic(UART_TX);
+      rxChar = await svc.getCharacteristic(UART_RX);
+      await txChar.startNotifications();
+      txChar.addEventListener('characteristicvaluechanged', onNotify);
+      setConn('connected'); enableCmds(true); ui.btnDisconnect.disabled=false;
+      log('Verbonden met ' + (device.name || 'apparaat'));
+      sendCmd('INFO?'); sendCmd('CFG?');
+    }catch(e){ log('Connectie mislukt: ' + (e.message||e), 'error'); }
+  }
+
+  async function disconnect(){ try{ if (device && device.gatt.connected) device.gatt.disconnect(); }catch(e){} }
+
+  function onDisc(){ enableCmds(false); ui.btnDisconnect.disabled = true; setConn('idle'); log('Bluetooth disconnected', 'warn'); if (ui.autoReconnect.checked && device){ setTimeout(connect, 1000); } }
+
+  function onNotify(ev){
+    buffer += new TextDecoder().decode(ev.target.value);
+    for (const js of extractJson(buffer)){
+      try{
+        const o = JSON.parse(js);
+        if ('state' in o) setStateBadge(o.state);
+        if ('pct' in o) updateGauge(o.pct);
+        if (!o.evt && !("state" in o) && Object.keys(o).length){ ui.cfgDump.textContent = JSON.stringify(o, null, 2); log('CFG/INFO ontvangen'); }
+      }catch{}
+    }
+    const lc = buffer.lastIndexOf('}');
+    const lo = buffer.lastIndexOf('{');
+    if (lc > -1 && lc > lo) buffer = buffer.slice(lc + 1); else if (buffer.length > 2048) buffer = buffer.slice(-1024);
+  }
+
+  // Inline Auto-Cal flow
+  let step = 0; // 0=closed, 1=FULL, 2=EMPTY
+  function delay(ms){ return new Promise(r=>setTimeout(r, ms)); }
+  function openSteps(){ if(!rxChar){ log('Niet verbonden', 'warn'); return; } step = 1; ui.stepsPanel.classList.remove('hidden'); ui.stepBack.disabled = true; ui.stepNext.textContent = 'Markeer FULL'; ui.stepBadge.textContent = 'Stap 1/2'; ui.stepMsg.textContent = 'Vul de tank volledig en wacht tot het niveau stabiel is. Klik op “Markeer FULL”.'; enableCmds(false); ui.btnAutoCal.disabled = true; }
+  function closeSteps(){ step = 0; ui.stepsPanel.classList.add('hidden'); enableCmds(true); }
+  async function nextStep(){ if(step===1){ await sendCmd('INFO?'); await delay(200); await sendCmd('CAL FULL'); log('CAL FULL verstuurd'); step=2; ui.stepBack.disabled=false; ui.stepNext.textContent='Markeer EMPTY'; ui.stepBadge.textContent='Stap 2/2'; ui.stepMsg.textContent='Leeg de tank tot minimaal niveau en plaats hem terug. Klik op “Markeer EMPTY”.'; } else if(step===2){ await sendCmd('INFO?'); await delay(200); await sendCmd('CAL EMPTY'); log('CAL EMPTY verstuurd'); await delay(300); await sendCmd('CFG?'); log('Auto-calibratie gereed. Waarden opgeslagen.'); closeSteps(); } }
+  function backStep(){ if(step===2){ step=1; ui.stepBack.disabled = true; ui.stepNext.textContent = 'Markeer FULL'; ui.stepBadge.textContent = 'Stap 1/2'; ui.stepMsg.textContent = 'Vul de tank volledig en wacht tot het niveau stabiel is. Klik op “Markeer FULL”.'; } }
+  function cancelSteps(){ log('Auto-calibratie geannuleerd.'); closeSteps(); }
+
+  // Bindings
+  ui.btnConnect.addEventListener('click', connect);
+  ui.btnDisconnect.addEventListener('click', disconnect);
+  ui.cmds.forEach(b => b.addEventListener('click', () => sendCmd(b.dataset.cmd)));
+  ui.btnAutoCal.addEventListener('click', openSteps);
+  ui.stepNext.addEventListener('click', nextStep);
+  ui.stepBack.addEventListener('click', backStep);
+  ui.stepCancel.addEventListener('click', cancelSteps);
+
+  // Init
+  setConn('idle'); setStateBadge('—'); updateGauge(null);
+</script>
+</body>
+</html>
