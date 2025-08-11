@@ -397,9 +397,12 @@ class WaterModule:
     # Output policy
     def _apply_outputs(self, state):
         # Active-LOW logic: 0=allow/run, 1=safe-stop
-        allow_pump = (state == STATE_OK) or (self.cfg.get("allow_pump_at_low", True) and state == STATE_LOW)
-        allow_heater = (state == STATE_OK)            # heater off already at LOW
-        allow_master = allow_pump and allow_heater
+        allow_pump   = (state == STATE_OK) or (self.cfg.get("allow_pump_at_low", True) and state == STATE_LOW)
+        allow_heater = (state == STATE_OK)  # heater off already at LOW
+        # Master interlock by state policy:
+        #  - ON for OK and LOW (so pump may run at LOW if enabled)
+        #  - OFF for BOTTOM and FAULT
+        allow_master = (state in (STATE_OK, STATE_LOW))
 
         if not self._ready:
             allow_pump = False
@@ -512,4 +515,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
