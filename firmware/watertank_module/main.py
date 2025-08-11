@@ -377,15 +377,25 @@ class WaterModule:
             slim = {k:self.cfg.get(k) for k in keys}
             self.ble.notify(json.dumps(slim))
         elif cmd == "CAL EMPTY":
-            if self.est.ema:
-                self.cfg["cal_empty_mm"] = float(self.est.ema)
+            v = self.est.ema
+            if (v is not None) and math.isfinite(v) and (self.cfg["min_mm"] <= v <= self.cfg["max_mm"]):
+                self.cfg["cal_empty_mm"] = float(v)
                 save_config(self.cfg)
-                if self.ble: self.ble.notify("CAL EMPTY OK")
+                if self.ble: 
+                    self.ble.notify("CAL EMPTY OK")
+            else:
+                if self.ble:
+                    self.ble.notify("CAL REJECTED")
         elif cmd == "CAL FULL":
-            if self.est.ema:
-                self.cfg["cal_full_mm"] = float(self.est.ema)
+            v = self.est.ema
+            if (v is not None) and math.isfinite(v) and (self.cfg["min_mm"] <= v <= self.cfg["max_mm"]):
+                self.cfg["cal_full_mm"] = float(v)
                 save_config(self.cfg)
-                if self.ble: self.ble.notify("CAL FULL OK")
+                if self.ble: 
+                    self.ble.notify("CAL FULL OK")
+            else:
+                if self.ble:
+                    self.ble.notify("CAL REJECTED")
         elif cmd == "CAL CLEAR":
             self.cfg["cal_empty_mm"] = None
             self.cfg["cal_full_mm"] = None
@@ -515,5 +525,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
