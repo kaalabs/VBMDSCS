@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="300" viewBox="0 0 920 300">
+  <style>
+    .step{fill:#fff;stroke:#cbd5e1;stroke-width:1.2;rx:12;ry:12;}
+    .title{font:700 13px Arial, sans-serif;fill:#111;}
+    .text{font:12px Arial, sans-serif;fill:#334155;}
+    .line{stroke:#64748b;stroke-width:1.5;marker-end:url(#arrow);}
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect class="step" x="30" y="40" width="170" height="100"/>
+  <text class="title" x="45" y="65">1) Flash + Upload</text>
+  <text class="text" x="45" y="90">MicroPython + main.py</text>
+  <text class="text" x="45" y="110">config.json (optioneel)</text>
+
+  <line class="line" x1="200" y1="90" x2="260" y2="90"/>
+
+  <rect class="step" x="260" y="40" width="170" height="100"/>
+  <text class="title" x="275" y="65">2) Aansluiten</text>
+  <text class="text" x="275" y="90">DYP‑A02YY (UART)</text>
+  <text class="text" x="275" y="110">Interlocks (active‑LOW)</text>
+
+  <line class="line" x1="430" y1="90" x2="490" y2="90"/>
+
+  <rect class="step" x="490" y="40" width="170" height="100"/>
+  <text class="title" x="505" y="65">3) Verbinden</text>
+  <text class="text" x="505" y="90">WebBLE dashboard</text>
+  <text class="text" x="505" y="110">HTTPS/localhost</text>
+
+  <line class="line" x1="660" y1="90" x2="720" y2="90"/>
+
+  <rect class="step" x="720" y="40" width="170" height="100"/>
+  <text class="title" x="735" y="65">4) Calibratie</text>
+  <text class="text" x="735" y="90">CAL FULL → vol</text>
+  <text class="text" x="735" y="110">CAL EMPTY → min</text>
+</svg>

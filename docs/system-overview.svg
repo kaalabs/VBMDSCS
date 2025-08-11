@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="420" viewBox="0 0 920 420">
+  <style>
+    .card{fill:#fff;stroke:#cbd5e1;stroke-width:1.2;rx:14;ry:14;}
+    .title{font:700 14px Arial, sans-serif;fill:#111;}
+    .text{font:12px Arial, sans-serif;fill:#334155;}
+    .muted{fill:#64748b;font:12px Arial, sans-serif;}
+    .line{stroke:#64748b;stroke-width:1.5;marker-end:url(#arrow);}
+    .badge{font:11px Arial, sans-serif;fill:#2563eb;}
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <!-- Master Module -->
+  <rect class="card" x="40" y="40" width="260" height="120"/>
+  <text class="title" x="60" y="65">Mastermodule (ESP32‑S3)</text>
+  <text class="text" x="60" y="90">• Touchscreen UI</text>
+  <text class="text" x="60" y="110">• CAN orchestratie (later)</text>
+  <text class="text" x="60" y="130">• Veiligheidsbeleid + logging</text>
+
+  <!-- CAN bus -->
+  <line class="line" x1="300" y1="100" x2="620" y2="100"/>
+  <text class="muted" x="420" y="90">CAN (OpenCAN)</text>
+
+  <!-- WaterTank Module -->
+  <rect class="card" x="620" y="40" width="260" height="160"/>
+  <text class="title" x="640" y="65">WaterTank-module (ESP32‑WROOM‑32E)</text>
+  <text class="text" x="640" y="90">• DYP‑A02YY (UART)</text>
+  <text class="text" x="640" y="110">• Fail‑safe interlocks</text>
+  <text class="text" x="640" y="130">• BLE diagnose</text>
+  <text class="text" x="640" y="150">• Autonoom basisgedrag</text>
+
+  <!-- BLE to Browser -->
+  <line class="line" x1="750" y1="200" x2="750" y2="300"/>
+  <text class="muted" x="760" y="255" transform="rotate(90 760 255)">BLE (Nordic UART)</text>
+
+  <!-- Browser / WebBLE -->
+  <rect class="card" x="620" y="300" width="260" height="80"/>
+  <text class="title" x="640" y="325">WebBLE Dashboard (Pure CSS)</text>
+  <text class="text" x="640" y="345">• Live status, auto‑cal</text>
+
+  <!-- Interlocks -->
+  <rect class="card" x="40" y="220" width="260" height="160"/>
+  <text class="title" x="60" y="245">Interlocks (energize‑to‑run)</text>
+  <text class="text" x="60" y="270">• Pump OK (active‑LOW)</text>
+  <text class="text" x="60" y="290">• Heater OK (active‑LOW)</text>
+  <text class="text" x="60" y="310">• Master interlock (active‑LOW)</text>
+
+  <!-- Wiring lines -->
+  <line class="line" x1="620" y1="160" x2="300" y2="260"/>
+  <text class="muted" x="330" y="210" transform="rotate(-25 330 210)">Signalen (active‑LOW)</text>
+</svg>
