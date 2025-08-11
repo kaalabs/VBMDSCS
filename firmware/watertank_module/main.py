@@ -74,7 +74,7 @@ DEFAULT_CONFIG = {
     # UI/UX
     "led_pin": 2,
     "ble_enabled": True,
-    "ble_name": "DomobarTank",
+    "ble_name": "VBM-Domobar-WaterTank",
 
     # Calibration (starter anchors; overwrite via CAL FULL/EMPTY)
     "cal_auto_learn": True,
@@ -87,6 +87,9 @@ DEFAULT_CONFIG = {
     # Storage & boot
     "persist_path": "config.json",
     "boot_grace_s": 3,
+
+    # Test mode
+    "test_period_s": 20,
 }
 
 STATE_OK = "OK"
@@ -283,10 +286,16 @@ class SimpleBLE:
       * CAL CLEAR
       * CFG?
     """
-    def __init__(self, name="DomobarTank"):
+    def __init__(self, name="VBM-Domobar-WaterTank"):
         self.name = name
         self.ble = bluetooth.BLE()
         self.ble.active(True)
+        # Zorg dat de GAP Device Name overeenkomt met de gewenste naam.
+        # Browsers tonen vaak de GAP-naam i.p.v. de advertentienaam.
+        try:
+            self.ble.config(gap_name=self.name)
+        except Exception:
+            pass
         self.ble.irq(self._irq)
         UART_UUID = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
         UART_TX = (bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"), bluetooth.FLAG_NOTIFY)
@@ -321,10 +330,17 @@ class SimpleBLE:
         pass
 
     def notify(self, text):
+        # Chunk notifications to fit within ATT MTU (default 23 -> 20 bytes payload).
+        # Use a conservative chunk size of 18 bytes.
+        if text is None:
+            return
+        data = text if isinstance(text, bytes) else text.encode()
+        chunk_size = 18
         for c in self.connections:
             try:
-                self.ble.gatts_notify(c, self.tx_handle, text if isinstance(text, bytes) else text.encode())
-            except:
+                for i in range(0, len(data), chunk_size):
+                    self.ble.gatts_notify(c, self.tx_handle, data[i:i+chunk_size])
+            except Exception:
                 pass
 
 # --------------------------- Main Controller --------------------------------
@@ -332,11 +348,21 @@ class SimpleBLE:
 class WaterModule:
     def __init__(self):
         self.cfg = load_config()
-        self.led = Pin(self.cfg["led_pin"], Pin.OUT) if self.cfg["led_pin"] is not None else None
+        # Helper om pins veilig te initialiseren; retourneert None bij ongeldige pin
+        def _safe_pin(pin_no, description):
+            if pin_no is None:
+                return None
+            try:
+                return Pin(pin_no, Pin.OUT)
+            except Exception as e:
+                print("Warn:", f"invalid {description} pin {pin_no}:", e)
+                return None
 
-        self.interlock = Pin(self.cfg["interlock_pin"], Pin.OUT) if self.cfg["interlock_active"] else None
-        self.pump_ok = Pin(self.cfg["pump_ok_pin"], Pin.OUT) if self.cfg["use_pump_ok"] else None
-        self.heater_ok = Pin(self.cfg["heater_ok_pin"], Pin.OUT) if self.cfg["use_heater_ok"] else None
+        self.led = _safe_pin(self.cfg["led_pin"], "led") if self.cfg["led_pin"] is not None else None
+
+        self.interlock = _safe_pin(self.cfg["interlock_pin"], "interlock") if self.cfg["interlock_active"] else None
+        self.pump_ok = _safe_pin(self.cfg["pump_ok_pin"], "pump_ok") if self.cfg["use_pump_ok"] else None
+        self.heater_ok = _safe_pin(self.cfg["heater_ok_pin"], "heater_ok") if self.cfg["use_heater_ok"] else None
 
         for pin in (self.interlock, self.pump_ok, self.heater_ok):
             if pin:
@@ -355,6 +381,10 @@ class WaterModule:
         self._last_read_ms = time.ticks_ms()
         self._boot_t0 = time.ticks_ms()
         self._ready = False
+
+        # Test mode state
+        self.test_active = False
+        self._test_t0 = None
 
     # BLE commands
     def _on_ble_command(self, cmd):
@@ -397,6 +427,20 @@ class WaterModule:
             else:
                 if self.ble:
                     self.ble.notify("CAL REJECTED")
+        elif cmd == "TEST START":
+            self.test_active = True
+            self._test_t0 = time.ticks_ms()
+            # For safety, consider system ready but keep outputs safe via _apply_outputs
+            self._ready = True
+            if self.ble:
+                self.ble.notify(json.dumps({"evt":"test","msg":"started"}))
+        elif cmd == "TEST STOP":
+            self.test_active = False
+            if self.ble:
+                self.ble.notify(json.dumps({"evt":"test","msg":"stopped"}))
+        elif cmd == "TEST?":
+            if self.ble:
+                self.ble.notify(json.dumps({"evt":"test","active": self.test_active}))
         elif cmd == "CAL CLEAR":
             self.cfg["cal_empty_mm"] = None
             self.cfg["cal_full_mm"] = None
@@ -415,6 +459,12 @@ class WaterModule:
         #  - ON for OK and LOW (so pump may run at LOW if enabled)
         #  - OFF for BOTTOM and FAULT
         allow_master = (state in (STATE_OK, STATE_LOW))
+
+        # In test mode: never energize outputs
+        if self.test_active:
+            allow_pump = False
+            allow_heater = False
+            allow_master = False
 
         if not self._ready:
             allow_pump = False
@@ -457,31 +507,78 @@ class WaterModule:
         period = max(0.02, 1.0 / float(self.cfg["sample_hz"]))
         last_valid_ms = time.ticks_ms()
         while True:
-            self.wdt.feed()
-            mm = self.sensor.read_mm()
-            now = time.ticks_ms()
-
-            if mm is not None:
-                self._last_read_ms = now
-                last_valid_ms = now
-                _, pct = self.est.ingest_mm(mm)
-                new_state = self.est.decide_state() if pct is not None else STATE_FAULT
-            else:
-                if time.ticks_diff(now, last_valid_ms) > self.cfg["timeout_ms"]:
-                    new_state = STATE_FAULT
+            try:
+                self.wdt.feed()
+                # Choose source: real sensor or test generator
+                if self.test_active:
+                    # Generate a smooth sawtooth between full and empty calibration anchors
+                    now = time.ticks_ms()
+                    if self._test_t0 is None:
+                        self._test_t0 = now
+                    period_s = self.cfg.get("test_period_s", 20)
+                    try:
+                        period_s = float(period_s)
+                    except Exception:
+                        period_s = 20.0
+                    if period_s < 1.0:
+                        period_s = 1.0  # minimum 1s per full cycle half
+                    period_ms = int(period_s * 1000)
+                    if period_ms <= 0:
+                        period_ms = 20000
+                    t = time.ticks_diff(now, self._test_t0)
+                    if t < 0:
+                        t = 0
+                    t %= period_ms
+                    ratio = t / float(period_ms)  # 0..1
+                    full_mm = self.cfg["cal_full_mm"] if self.cfg["cal_full_mm"] is not None else self.cfg["min_mm"]
+                    empty_mm = self.cfg["cal_empty_mm"] if self.cfg["cal_empty_mm"] is not None else self.cfg["max_mm"]
+                    # Ensure numeric
+                    try:
+                        full_mm = float(full_mm)
+                        empty_mm = float(empty_mm)
+                    except Exception:
+                        full_mm = float(self.cfg["min_mm"])
+                        empty_mm = float(self.cfg["max_mm"])
+                    # Sweep down then up across two halves of the period
+                    if ratio < 0.5:
+                        r = ratio / 0.5  # 0..1 downwards
+                        mm = int(full_mm + r * (empty_mm - full_mm))
+                    else:
+                        r = (ratio - 0.5) / 0.5  # 0..1 upwards
+                        mm = int(empty_mm + r * (full_mm - empty_mm))
                 else:
-                    new_state = self.est.state
+                    mm = self.sensor.read_mm()
 
-            if (not self._ready) and (time.ticks_diff(now, self._boot_t0) > self.cfg["boot_grace_s"] * 1000) and (self.est.last_pct is not None):
-                self._ready = True
+                now = time.ticks_ms()
 
-            if new_state != self.est.state:
-                self.est.state = new_state
-                if self.ble:
-                    self.ble.notify(json.dumps({"evt":"state", "state":new_state, "pct":self.est.last_pct}))
-            self._apply_outputs(self.est.state)
+                if mm is not None:
+                    self._last_read_ms = now
+                    last_valid_ms = now
+                    _, pct = self.est.ingest_mm(mm)
+                    new_state = self.est.decide_state() if pct is not None else STATE_FAULT
+                else:
+                    if time.ticks_diff(now, last_valid_ms) > self.cfg["timeout_ms"]:
+                        new_state = STATE_FAULT
+                    else:
+                        new_state = self.est.state
 
-            await asyncio.sleep(period)
+                if (not self._ready) and (time.ticks_diff(now, self._boot_t0) > self.cfg["boot_grace_s"] * 1000) and (self.est.last_pct is not None):
+                    self._ready = True
+
+                if new_state != self.est.state:
+                    self.est.state = new_state
+                    if self.ble:
+                        self.ble.notify(json.dumps({"evt":"state", "state":new_state, "pct":self.est.last_pct}))
+                self._apply_outputs(self.est.state)
+            except Exception as e:
+                # Never let the loop die silently; surface minimal info over BLE
+                try:
+                    if self.ble:
+                        self.ble.notify(json.dumps({"evt":"err","where":"sense","msg":str(e)}))
+                except Exception:
+                    pass
+            # Use ms sleep for MicroPython reliability
+            await asyncio.sleep_ms(int(period * 1000))
 
     # Periodic BLE push
     async def _ble_status(self):
@@ -493,10 +590,11 @@ class WaterModule:
                     "ema_mm": self.est.ema,
                     "obs_min": self.est.obs_min,
                     "obs_max": self.est.obs_max,
-                    "ready": self._ready
+                    "ready": self._ready,
+                    "test_active": self.test_active
                 }
                 self.ble.notify(json.dumps(msg))
-            await asyncio.sleep(2)
+            await asyncio.sleep_ms(2000)
 
     def run(self):
         loop = asyncio.get_event_loop()
@@ -527,6 +625,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-

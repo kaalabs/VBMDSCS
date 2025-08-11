@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>VBM Domobar Waterniveau — Pure CSS Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232563eb'/%3E%3Cstop offset='1' stop-color='%2316a34a'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='4' y='4' width='56' height='56' rx='12' fill='url(%23g)'/%3E%3Cpath d='M32 12 C 20 28 20 28 32 48 C 44 28 44 28 32 12 Z' fill='%23fff'/%3E%3C/svg%3E" />
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232563eb'/%3E%3Cstop offset='1' stop-color='%2316a34a'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='4' y='4' width='56' height='56' rx='12' fill='url(%23g)'/%3E%3Cpath d='M32 12 C 20 28 20 28 32 48 C 44 28 44 28 32 12 Z' fill='%23fff'/%3E%3C/svg%3E" />
   <!--
     Pure CSS + vanilla JS variant (geen externe frameworks of libraries)
     - Web Bluetooth Nordic UART UUID's
@@ -48,6 +50,16 @@
     /* Inline steps */
     .steps { border: 1px dashed var(--ring); border-radius: 8px; padding: 10px; }
     .hidden { display: none; }
+
+    /* User-mode hint styling */
+    .user-hint { border: 1px solid var(--ring); border-radius: 8px; padding: 6px 8px; background: #fff; width: 100%; }
+    .uh-ok { background: #ecfdf5; border-color: #bbf7d0; }
+    .uh-low { background: #fff7ed; border-color: #fed7aa; }
+    .uh-bottom, .uh-fault { background: #fef2f2; border-color: #fecaca; }
+    .uh-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; border: 1px solid var(--ring); }
+    .uh-dot.ok { background: var(--good); }
+    .uh-dot.low { background: var(--warn); }
+    .uh-dot.bottom, .uh-dot.fault { background: var(--bad); }
   </style>
 </head>
 <body>
@@ -59,6 +71,8 @@
       <button id="btnDisconnect" disabled>Verbreken</button>
       <label><input type="checkbox" id="autoReconnect" checked> Auto-reconnect</label>
       <span id="connBadge" class="badge b-gray">idle</span>
+      <span style="flex:1"></span>
+      <label class="muted" title="Toon onderhouds- en expertfuncties."><input type="checkbox" id="modeExpert"> Onderhoudsmodus</label>
     </div>
   </div>
 
@@ -67,25 +81,47 @@
       <strong>Status</strong>
       <span id="stateBadge" class="badge b-gray">—</span>
     </div>
+    <div class="row space expert">
+      <span>Gereed</span>
+      <span id="readyBadge" class="badge b-gray">—</span>
+    </div>
     <div class="row space">
       <span>Waterniveau</span>
       <span id="pct">—</span>
     </div>
     <div class="bar" id="lvlBar"><div id="lvlFill"></div></div>
+    <div class="row user" id="userHintRow" style="margin-top:6px; width:100%;">
+      <div id="userHintBox" class="user-hint">
+        <span id="userHintDot" class="uh-dot"></span>
+        <span id="userHint" class="muted">—</span>
+      </div>
+    </div>
+    <div class="row space expert" style="margin-top:6px;">
+      <span>EMA (mm)</span>
+      <span id="ema">—</span>
+    </div>
+    <div class="row space expert">
+      <span>Obs. min/max (mm)</span>
+      <span id="obs">—</span>
+    </div>
   </div>
 
   <div class="card">
-    <div class="row" style="gap:8px;">
+    <div class="row expert" style="gap:8px;">
       <button class="cmd" data-cmd="INFO?" disabled>INFO?</button>
       <button class="cmd" data-cmd="CFG?" disabled>CFG?</button>
       <button class="cmd btn-blue" data-cmd="CAL FULL" disabled>CAL FULL</button>
       <button class="cmd btn-blue" data-cmd="CAL EMPTY" disabled>CAL EMPTY</button>
       <button class="cmd btn-amber" data-cmd="CAL CLEAR" disabled>CAL CLEAR</button>
       <button id="btnAutoCal" class="btn-blue" disabled>Auto-Calibratie</button>
+      <span class="muted">| Test</span>
+      <button class="cmd" data-cmd="TEST START" disabled>TEST START</button>
+      <button class="cmd" data-cmd="TEST STOP" disabled>TEST STOP</button>
+      <button class="cmd" data-cmd="TEST?" disabled>TEST?</button>
     </div>
 
     <!-- Inline stappenpaneel -->
-    <div id="stepsPanel" class="steps hidden" style="margin-top:8px;">
+    <div id="stepsPanel" class="steps hidden expert" style="margin-top:8px;">
       <div class="row space">
         <strong>Auto-calibratie</strong>
         <span id="stepBadge" class="badge b-gray">Stap 1/2</span>
@@ -99,12 +135,12 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card expert">
     <strong>Laatst ontvangen CFG/INFO</strong>
     <pre id="cfgDump">—</pre>
   </div>
 
-  <div class="card">
+  <div class="card expert">
     <strong>Event Log</strong>
     <div id="log" class="log"></div>
   </div>
@@ -120,8 +156,10 @@
     btnConnect: document.getElementById('btnConnect'),
     btnDisconnect: document.getElementById('btnDisconnect'),
     autoReconnect: document.getElementById('autoReconnect'),
+    modeExpert: document.getElementById('modeExpert'),
     connBadge: document.getElementById('connBadge'),
     stateBadge: document.getElementById('stateBadge'),
+    readyBadge: document.getElementById('readyBadge'),
     pct: document.getElementById('pct'),
     lvlFill: document.getElementById('lvlFill'),
     cmds: Array.from(document.querySelectorAll('.cmd')),
@@ -134,9 +172,19 @@
     stepNext: document.getElementById('stepNext'),
     cfgDump: document.getElementById('cfgDump'),
     log: document.getElementById('log'),
+    ema: document.getElementById('ema'),
+    obs: document.getElementById('obs'),
+    userHintRow: document.getElementById('userHintRow'),
+    userHintBox: document.getElementById('userHintBox'),
+    userHintDot: document.getElementById('userHintDot'),
+    userHint: document.getElementById('userHint'),
   };
 
   let device=null, server=null, rxChar=null, txChar=null, buffer='';
+  let reconnectTimer = null;
+  let testPollTimer = null;
+  let isExpert = false;
+  let lastState = null, lastPct = null, lastReady = null;
 
   function now() { return new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
   function log(line, kind) {
@@ -152,6 +200,12 @@
   function setConn(state) {
     ui.connBadge.textContent = state;
     ui.connBadge.className = 'badge ' + (state === 'connected' ? 'b-green' : 'b-gray');
+    updateConnButtons(state === 'connected');
+  }
+
+  function updateConnButtons(isConnected){
+    ui.btnConnect.disabled = !!isConnected;
+    ui.btnDisconnect.disabled = !isConnected;
   }
 
   function setStateBadge(st) {
@@ -163,6 +217,25 @@
     else if (st === 'LOW') ui.lvlFill.classList.add('tone-yellow');
     else if (st === 'BOTTOM') ui.lvlFill.classList.add('tone-red');
   }
+  function setUserHint(state, pct, ready){
+    let txt = '—';
+    let boxClass = 'user-hint';
+    let dotClass = 'uh-dot';
+    if (ready === false) { txt = 'Initialiseren…'; boxClass += ' uh-ok'; dotClass += ' ok'; }
+    else if (state === 'OK') { txt = 'Niveau OK'; boxClass += ' uh-ok'; dotClass += ' ok'; }
+    else if (state === 'LOW') { txt = 'Niveau laag — vul de tank bij'; boxClass += ' uh-low'; dotClass += ' low'; }
+    else if (state === 'BOTTOM') { txt = 'Tank leeg — machine beveiligd. Vul de tank.'; boxClass += ' uh-bottom'; dotClass += ' bottom'; }
+    else if (state === 'FAULT') { txt = 'Sensorstoring — controleer sensor/verbinding'; boxClass += ' uh-fault'; dotClass += ' fault'; }
+    ui.userHint.textContent = txt;
+    ui.userHintBox.className = boxClass;
+    ui.userHintDot.className = dotClass;
+  }
+  function setReadyBadge(val) {
+    if (val === null || val === undefined) { ui.readyBadge.textContent = '—'; ui.readyBadge.className = 'badge b-gray'; return; }
+    const r = !!val;
+    ui.readyBadge.textContent = r ? 'ready' : 'not-ready';
+    ui.readyBadge.className = 'badge ' + (r ? 'b-green' : 'b-gray');
+  }
 
   function updateGauge(pct) {
     const v = (typeof pct === 'number') ? Math.max(0, Math.min(100, pct)) : null;
@@ -173,36 +246,138 @@
   function* extractJson(stream){ let d=0,s=-1; for(let i=0;i<stream.length;i++){ const c=stream[i]; if(c==='{' ){ if(d===0) s=i; d++; } else if(c==='}'){ d--; if(d===0 && s!==-1){ yield stream.slice(s,i+1); s=-1; } } } }
 
   function enableCmds(on) { ui.cmds.forEach(b => b.disabled = !on); ui.btnAutoCal.disabled = !on; }
+  function applyMode(){
+    isExpert = !!ui.modeExpert.checked;
+    // persist
+    try { localStorage.setItem('wt_mode', isExpert ? 'expert' : 'user'); } catch(e){}
+    // toggle expert-only sections, maar respecteer de 'hidden' van het stappenpaneel
+    document.querySelectorAll('.expert').forEach(el => {
+      if (el.id === 'stepsPanel') return; // beheerd via open/closeSteps
+      if (isExpert) el.classList.remove('hidden'); else el.classList.add('hidden');
+    });
+    // toggle user-only sections
+    document.querySelectorAll('.user').forEach(el => {
+      if (isExpert) el.classList.add('hidden'); else el.classList.remove('hidden');
+    });
+    // Bij modewissel de hint updaten met laatste bekende waarden
+    setUserHint(lastState, lastPct, lastReady);
+  }
   async function sendCmd(txt){ if(!rxChar) return; await rxChar.writeValue(new TextEncoder().encode(txt)); log('> '+txt, 'send'); }
+
+  async function setupGatt(){
+    const svc = await server.getPrimaryService(UART_SERVICE);
+    txChar = await svc.getCharacteristic(UART_TX);
+    rxChar = await svc.getCharacteristic(UART_RX);
+    await txChar.startNotifications();
+    txChar.addEventListener('characteristicvaluechanged', onNotify);
+  }
 
   async function connect(){
     try{
-      const dev = await navigator.bluetooth.requestDevice({ filters:[{ services:[UART_SERVICE] }], optionalServices:[UART_SERVICE] });
+      // Als we al een device hebben, probeer direct te verbinden zonder prompt
+      if (device) {
+        // Zorg dat disconnect-listener staat
+        device.removeEventListener && device.removeEventListener('gattserverdisconnected', onDisc);
+        device.addEventListener('gattserverdisconnected', onDisc);
+        if (!device.gatt.connected) {
+          server = await device.gatt.connect();
+          await setupGatt();
+          setConn('connected'); enableCmds(true);
+          log('Opnieuw verbonden met ' + (device.name || 'apparaat'));
+        } else {
+          setConn('connected'); enableCmds(true);
+        }
+        sendCmd('INFO?'); sendCmd('CFG?');
+        if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+        return;
+      }
+      // Anders: vraag de gebruiker om een device te kiezen (zonder service-filter in advertentie)
+      // Sommige firmwares adverteren de service UUID niet in de advertising payload.
+      // Gebruik acceptAllDevices + optionalServices om later de UART service te openen.
+      const dev = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [UART_SERVICE] });
       device = dev; device.addEventListener('gattserverdisconnected', onDisc);
       server = await device.gatt.connect();
-      const svc = await server.getPrimaryService(UART_SERVICE);
-      txChar = await svc.getCharacteristic(UART_TX);
-      rxChar = await svc.getCharacteristic(UART_RX);
-      await txChar.startNotifications();
-      txChar.addEventListener('characteristicvaluechanged', onNotify);
-      setConn('connected'); enableCmds(true); ui.btnDisconnect.disabled=false;
+      await setupGatt();
+      setConn('connected'); enableCmds(true);
       log('Verbonden met ' + (device.name || 'apparaat'));
       sendCmd('INFO?'); sendCmd('CFG?');
+      if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
     }catch(e){ log('Connectie mislukt: ' + (e.message||e), 'error'); }
+  }
+
+  async function reconnect(){
+    if (!device) return;
+    try{
+      if (!device.gatt.connected) {
+        server = await device.gatt.connect();
+        await setupGatt();
+        setConn('connected'); enableCmds(true);
+        log('Opnieuw verbonden met ' + (device.name || 'apparaat'));
+        sendCmd('INFO?'); sendCmd('CFG?');
+        if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+      }
+    }catch(e){
+      log('Reconnect mislukt: ' + (e.message||e), 'warn');
+      // blijf proberen in de achtergrond zolang autoReconnect aan staat
+      if (ui.autoReconnect.checked && !reconnectTimer) reconnectTimer = setInterval(reconnect, 2000);
+    }
   }
 
   async function disconnect(){ try{ if (device && device.gatt.connected) device.gatt.disconnect(); }catch(e){} }
 
-  function onDisc(){ enableCmds(false); ui.btnDisconnect.disabled = true; setConn('idle'); log('Bluetooth disconnected', 'warn'); if (ui.autoReconnect.checked && device){ setTimeout(connect, 1000); } }
+  function onDisc(){
+    // Maak karakteristieken ongeldig zodat we bij reconnect alles opnieuw opzetten
+    rxChar = null; txChar = null; server = null;
+    enableCmds(false);
+    setConn('idle');
+    log('Bluetooth disconnected', 'warn');
+    if (ui.autoReconnect.checked && device){
+      if (!reconnectTimer) reconnectTimer = setInterval(reconnect, 2000);
+      setTimeout(reconnect, 1000);
+    }
+  }
 
   function onNotify(ev){
     buffer += new TextDecoder().decode(ev.target.value);
     for (const js of extractJson(buffer)){
       try{
         const o = JSON.parse(js);
-        if ('state' in o) setStateBadge(o.state);
-        if ('pct' in o) updateGauge(o.pct);
-        if (!o.evt && !("state" in o) && Object.keys(o).length){ ui.cfgDump.textContent = JSON.stringify(o, null, 2); log('CFG/INFO ontvangen'); }
+        if ('state' in o) { setStateBadge(o.state); lastState = o.state; }
+        if ('pct' in o) { updateGauge(o.pct); lastPct = o.pct; }
+        // Extra velden uit firmware tonen
+        if ('ready' in o) { setReadyBadge(o.ready); lastReady = o.ready; }
+        if ('ema_mm' in o) ui.ema.textContent = (o.ema_mm == null) ? '—' : Number(o.ema_mm).toFixed(1) + ' mm';
+        if ('obs_min' in o || 'obs_max' in o) {
+          const mn = (o.obs_min == null) ? '—' : Number(o.obs_min).toFixed(1);
+          const mx = (o.obs_max == null) ? '—' : Number(o.obs_max).toFixed(1);
+          ui.obs.textContent = mn + ' / ' + mx;
+        }
+        // Update user hint op basis van laatste bekende state
+        setUserHint(lastState, lastPct, lastReady);
+        // Test events/status
+        if (o.evt === 'test') {
+          log('TEST: ' + (o.msg || JSON.stringify(o)), 'warn');
+        }
+        if ('test_active' in o) {
+          const active = !!o.test_active;
+          log('TEST active: ' + (active ? 'yes' : 'no'));
+          // Start/stop fallback polling tijdens testmodus
+          if (active && !testPollTimer) {
+            testPollTimer = setInterval(() => { if (rxChar) sendCmd('INFO?'); }, 1000);
+          } else if (!active && testPollTimer) {
+            clearInterval(testPollTimer); testPollTimer = null;
+          }
+        }
+        // Toon expliciet CFG en INFO responses in het paneel (ook als er 'state' in zit)
+        const isCfg = ('uart_port' in o) || ('uart_rx' in o) || ('uart_tx' in o)
+          || ('min_mm' in o) || ('max_mm' in o) || ('timeout_ms' in o) || ('sample_hz' in o)
+          || ('hysteresis_pct' in o) || ('low_pct' in o) || ('bottom_pct' in o)
+          || ('allow_pump_at_low' in o) || ('interlock_active' in o) || ('use_pump_ok' in o) || ('use_heater_ok' in o);
+        const isInfo = ('cal_empty_mm' in o) || ('cal_full_mm' in o);
+        if (!('evt' in o) && (isCfg || isInfo)) {
+          ui.cfgDump.textContent = JSON.stringify(o, null, 2);
+          log('CFG/INFO ontvangen');
+        }
       }catch{}
     }
     const lc = buffer.lastIndexOf('}');
@@ -222,14 +397,27 @@
   // Bindings
   ui.btnConnect.addEventListener('click', connect);
   ui.btnDisconnect.addEventListener('click', disconnect);
-  ui.cmds.forEach(b => b.addEventListener('click', () => sendCmd(b.dataset.cmd)));
+  ui.cmds.forEach(b => b.addEventListener('click', () => {
+    const cmd = b.dataset.cmd;
+    // Start/stop test fallback poll immediately on user action
+    if (cmd === 'TEST START') {
+      if (!testPollTimer) testPollTimer = setInterval(() => { if (rxChar) sendCmd('INFO?'); }, 1000);
+    } else if (cmd === 'TEST STOP') {
+      if (testPollTimer) { clearInterval(testPollTimer); testPollTimer = null; }
+    }
+    sendCmd(cmd);
+  }));
   ui.btnAutoCal.addEventListener('click', openSteps);
   ui.stepNext.addEventListener('click', nextStep);
   ui.stepBack.addEventListener('click', backStep);
   ui.stepCancel.addEventListener('click', cancelSteps);
+  ui.modeExpert.addEventListener('change', applyMode);
 
   // Init
-  setConn('idle'); setStateBadge('—'); updateGauge(null);
+  setConn('idle'); setStateBadge('—'); setReadyBadge(null); updateGauge(null);
+  // Restore mode
+  try { ui.modeExpert.checked = (localStorage.getItem('wt_mode') === 'expert'); } catch(e){}
+  applyMode();
 </script>
 </body>
 </html>
