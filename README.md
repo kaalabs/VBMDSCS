@@ -20,8 +20,8 @@ firmware/
     main.py         # Micropython code (ESP32-WROOM-32E)
     config.json     # Domobar-tuned defaults
 web-dashboard/
-  pure-css/
-    domobar_webble.html  # Pure CSS WebBLE
+  watertank_module/
+    watertank_module_webble.html  # Pure CSS WebBLE
 docs/
   system-overview.svg
   quickstart-flow.svg
@@ -38,7 +38,7 @@ README.md
 1. **Flash** MicroPython op ESP32-WROOM-32E.
 2. **Upload** `firmware/watertank_module/main.py` en optioneel `config.json`.
 3. **Koppel** DYP-A02YY (UART) + interlock-relais (energize-to-run, active-LOW).
-4. **Start** en **verbind** via het WebBLE-dashboard (`web-dashboard/pure-css/domobar_webble.html`).
+4. **Start** en **verbind** via het WebBLE-dashboard (`web-dashboard/watertank_module/watertank_module_webble.html`).
 5. **Calibreer**: `CAL FULL` → tank vol; `CAL EMPTY` → minimaal niveau; check `CFG?`.
 
 ## Veiligheid
@@ -53,7 +53,7 @@ README.md
 - Sample: `sample_hz=8`, timeout `1200 ms`.
 - Kalibratie: `CAL FULL`/`CAL EMPTY` (waarden persist in `config.json`).
 
-## Dashboards (Pure CSS)
+## Dashboards (Watertank_Module)
 - **WebBLE** dashboard met:
   - Live `%` + status (OK/LOW/BOTTOM/FAULT) en kleurindicatie.
   - Inline **auto-calibratie** stappenpaneel (FULL → EMPTY).
