@@ -29,6 +29,17 @@ from .level_estimator import (
 )
 from .simple_ble import SimpleBLE
 
+# Try to import display module (ESP32-S3-BOX-3 only)
+try:
+    from .display import update_tank_level, update_status, add_log_message
+    DISPLAY_AVAILABLE = True
+except ImportError:
+    # Fallback functions if display not available
+    def update_tank_level(level_pct, level_mm=None): pass
+    def update_status(status, color=None): pass
+    def add_log_message(message, level="info"): pass
+    DISPLAY_AVAILABLE = False
+
 # ---------------------------- Configuration ---------------------------------
 
 DEFAULT_CONFIG = {
@@ -67,6 +78,9 @@ DEFAULT_CONFIG = {
     "led_pin": 2,             # GPIO for status LED (set to None to disable)
     "ble_enabled": True,      # enable Nordic UART-like BLE service (WebBLE)
     "ble_name": "VBMDSCSWT", # BLE GAP/advertising device name
+    "display_enabled": True,  # enable ESP32-S3-BOX-3 display (if available)
+    "display_brightness": 50, # display brightness 0-100
+    "display_timeout_s": 0,   # display timeout in seconds (0 = always on)
 
     # Calibration (starter anchors; overwrite via CAL FULL/EMPTY)
     "cal_auto_learn": True,  # auto-track observed min/max to backstop missing anchors
@@ -173,6 +187,11 @@ class WaterModule:
         # Test mode state: synthetic sweep replaces sensor input when enabled
         self.test_active = False
         self._test_t0 = None
+        
+        # Initialize display status
+        if DISPLAY_AVAILABLE:
+            update_status("Initializing...", 0xFFFF00)
+            add_log_message("WaterTank module starting up", "info")
 
     # BLE commands
     def _on_ble_command(self, cmd):
@@ -208,9 +227,11 @@ class WaterModule:
             if (v is not None) and math.isfinite(v) and (self.cfg["min_mm"] <= v <= self.cfg["max_mm"]):
                 self.cfg["cal_empty_mm"] = float(v)
                 save_config(self.cfg)
+                add_log_message(f"Calibrated EMPTY: {v:.1f}mm", "info")
                 if self.ble:
                     self.ble.notify("CAL EMPTY OK")
             else:
+                add_log_message("Calibration rejected - invalid reading", "warn")
                 if self.ble:
                     self.ble.notify("CAL REJECTED")
         elif cmd == "CAL FULL":
@@ -218,9 +239,11 @@ class WaterModule:
             if (v is not None) and math.isfinite(v) and (self.cfg["min_mm"] <= v <= self.cfg["max_mm"]):
                 self.cfg["cal_full_mm"] = float(v)
                 save_config(self.cfg)
+                add_log_message(f"Calibrated FULL: {v:.1f}mm", "info")
                 if self.ble:
                     self.ble.notify("CAL FULL OK")
             else:
+                add_log_message("Calibration rejected - invalid reading", "warn")
                 if self.ble:
                     self.ble.notify("CAL REJECTED")
         elif cmd == "TEST START":
@@ -228,10 +251,14 @@ class WaterModule:
             self._test_t0 = time.ticks_ms()
             # For safety, consider system ready but keep outputs safe via _apply_outputs
             self._ready = True
+            add_log_message("Test mode started", "info")
+            update_status("TEST MODE - Synthetic Data", 0x0088FF)
             if self.ble:
                 self.ble.notify(json.dumps({"evt":"test","msg":"started"}))
         elif cmd == "TEST STOP":
             self.test_active = False
+            add_log_message("Test mode stopped", "info")
+            # Status will be updated by next state change
             if self.ble:
                 self.ble.notify(json.dumps({"evt":"test","msg":"stopped"}))
         elif cmd == "TEST?":
@@ -375,6 +402,10 @@ class WaterModule:
                     last_valid_ms = now
                     _, pct = self.est.ingest_mm(mm)
                     new_state = self.est.decide_state() if pct is not None else STATE_FAULT
+                    
+                    # Update display with tank level
+                    if pct is not None:
+                        update_tank_level(pct, mm)
                 else:
                     if time.ticks_diff(now, last_valid_ms) > self.cfg["timeout_ms"]:
                         new_state = STATE_FAULT
@@ -386,11 +417,23 @@ class WaterModule:
 
                 if new_state != self.est.state:
                     self.est.state = new_state
+                    # Update display status
+                    if self.est.state == STATE_OK:
+                        update_status("OK - Normal Operation", 0x00FF00)
+                    elif self.est.state == STATE_LOW:
+                        update_status("LOW - Heater Disabled", 0xFF8800)
+                    elif self.est.state == STATE_BOTTOM:
+                        update_status("BOTTOM - All Systems Off", 0xFF0000)
+                    elif self.est.state == STATE_FAULT:
+                        update_status("FAULT - Check Sensor", 0xFF0000)
+                    
                     if self.ble:
                         self.ble.notify(json.dumps({"evt":"state", "state":new_state, "pct":self.est.last_pct}))
                 self._apply_outputs(self.est.state)
             except Exception as e:
                 # Never let the loop die silently; surface minimal info over BLE
+                error_msg = f"Sense loop error: {e}"
+                add_log_message(error_msg, "err")
                 try:
                     if self.ble:
                         self.ble.notify(json.dumps({"evt":"err","where":"sense","msg":str(e)}))
