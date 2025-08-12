@@ -48,6 +48,7 @@ import uasyncio as asyncio
 import machine
 import time
 import sys
+import os
 from machine import UART, Pin, WDT
 import math
 
@@ -150,9 +151,14 @@ def load_config():
         return DEFAULT_CONFIG.copy()
 
 def save_config(cfg):
+    tmp_path = cfg["persist_path"] + ".tmp"
     try:
-        with open(cfg["persist_path"], "w") as f:
-            f.write(json.dumps(cfg))
+        with open(tmp_path, "w") as f:
+            f.write(json.dumps(cfg, indent=2))
+        try:
+            os.rename(tmp_path, cfg["persist_path"])
+        except Exception as e:
+            log("warn", f"Config rename failed: {e}")
     except Exception as e:
         log("err", f"Config save error: {e}")
 
