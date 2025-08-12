@@ -148,7 +148,7 @@
     </div>
   </div>
 
-  <div class="card expert">
+  <div class="card expert" id="cfgCard">
     <strong>Laatst ontvangen CFG/INFO</strong>
     <pre id="cfgDump">—</pre>
   </div>
@@ -435,10 +435,16 @@
         const isCfg = ('uart_port' in o) || ('uart_rx' in o) || ('uart_tx' in o)
           || ('min_mm' in o) || ('max_mm' in o) || ('timeout_ms' in o) || ('sample_hz' in o)
           || ('hysteresis_pct' in o) || ('low_pct' in o) || ('bottom_pct' in o)
-          || ('allow_pump_at_low' in o) || ('interlock_active' in o) || ('use_pump_ok' in o) || ('use_heater_ok' in o);
+          || ('allow_pump_at_low' in o) || ('interlock_active' in o) || ('use_pump_ok' in o) || ('use_heater_ok' in o)
+          // Also treat BLE identity fields as CFG so we always render the config dump
+          || ('ble_enabled' in o) || ('ble_name' in o);
         const isInfo = ('cal_empty_mm' in o) || ('cal_full_mm' in o);
-        if (!('evt' in o) && (isCfg || isInfo)) {
-          ui.cfgDump.textContent = JSON.stringify(o, null, 2);
+        if (isCfg || isInfo) {
+          try {
+            ui.cfgDump.textContent = JSON.stringify(o, null, 2);
+          } catch (e) {
+            ui.cfgDump.textContent = String(o);
+          }
           log('CFG/INFO ontvangen');
         }
       }catch{}

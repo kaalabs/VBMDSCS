@@ -24,6 +24,25 @@
 #  4) Press CFG? to confirm cal_* stored; verify OK/LOW/BOTTOM transitions.
 #
 
+"""WaterTank core module for ESP32 (MicroPython)
+
+Overview
+--------
+- Reads a DYP-A02YY ultrasonic sensor (UART) and converts raw distance into:
+  smoothed millimeters, percentage full, and high-level state (OK/LOW/BOTTOM/FAULT).
+- Enforces safety via active-LOW interlock outputs; defaults to safe-off on fault.
+- Exposes a minimal BLE UART-like interface for status and commands (WebBluetooth).
+- Designed for robustness on a coffee machine: hysteresis, filtering, and fail-safe.
+
+Key concepts
+------------
+- Filtering pipeline: median window → EMA smoothing → percent mapping using
+  calibration anchors → hysteresis state machine to avoid chatter.
+- BLE: Nordic UART-style service; small JSON messages for CFG/INFO/status, plus
+  plain-text acks for calibration.
+- Test mode: generates a synthetic sweep to exercise the pipeline without water.
+"""
+
 import ujson as json
 import uasyncio as asyncio
 import machine
@@ -37,59 +56,65 @@ try:
 except ImportError:
     bluetooth = None  # BLE optional for early bring-up
 
+# Best-effort scheduling outside of IRQ context
+try:
+    import micropython
+except Exception:
+    micropython = None
+
 # ---------------------------- Configuration ---------------------------------
 
 DEFAULT_CONFIG = {
     # UART wiring (DYP-A02YY UART)
-    "uart_port": 2,
-    "uart_rx": 16,
-    "uart_tx": 17,
-    "uart_baud": 9600,
+    "uart_port": 2,          # MicroPython UART ID used for the sensor (typically 1 or 2)
+    "uart_rx": 16,           # GPIO number for UART RX (sensor TX)
+    "uart_tx": 17,           # GPIO number for UART TX (sensor RX)
+    "uart_baud": 9600,       # DYP-A02YY default baudrate
 
     # Sampling & filtering
-    "sample_hz": 8,          # tuned: smooth yet responsive
-    "window": 5,             # median window size
-    "ema_alpha": 0.25,       # EMA smoothing factor
+    "sample_hz": 8,          # sensor sampling frequency (Hz)
+    "window": 5,             # median filter window size (number of samples)
+    "ema_alpha": 0.25,       # EMA smoothing factor (0..1); higher = more responsive
 
     # Plausibility window for the Domobar tank geometry
-    "min_mm": 30,            # below sensor blind zone; reject <30 mm
-    "max_mm": 220,           # tank height (~196 mm) + mounting margin
+    "min_mm": 30,            # plausible minimum distance (sensor blind zone ~30 mm)
+    "max_mm": 220,           # plausible maximum distance (tank height + margin)
 
     # Sensor timeout
-    "timeout_ms": 1200,      # > 1 reading stall → fault
+    "timeout_ms": 1200,      # if no valid reading for this long → FAULT
 
     # Level policy (percent of tank fullness)
-    "bottom_pct": 10,        # hard stop (interlocks)
-    "low_pct": 30,           # early warning + heater cut
-    "hysteresis_pct": 4,     # wider hysteresis to prevent chatter
+    "bottom_pct": 10,        # percent threshold: empty. Interlocks enforced.
+    "low_pct": 30,           # percent threshold: low. Heater disabled.
+    "hysteresis_pct": 4,     # percent hysteresis band to avoid rapid toggling
 
     # Interlocks (active-LOW: 0=energize/run, 1=safe)
-    "interlock_active": True,
-    "interlock_pin": 15,
-    "pump_ok_pin": 14,
-    "heater_ok_pin": 27,
-    "use_pump_ok": True,
-    "use_heater_ok": True,
+    "interlock_active": True, # master interlock logic enabled/disabled
+    "interlock_pin": 15,      # GPIO that gates all loads; 0=allow, 1=safe (active-LOW)
+    "pump_ok_pin": 14,        # GPIO that permits the pump; 0=allow, 1=stop (active-LOW)
+    "heater_ok_pin": 27,      # GPIO that permits the heater; 0=allow, 1=stop (active-LOW)
+    "use_pump_ok": True,      # if False: ignore pump_ok pin (left safe/off)
+    "use_heater_ok": True,    # if False: ignore heater_ok pin (left safe/off)
 
     # UI/UX
-    "led_pin": 2,
-    "ble_enabled": True,
-    "ble_name": "VBM-Domobar-WaterTank",
+    "led_pin": 2,             # GPIO for status LED (set to None to disable)
+    "ble_enabled": True,      # enable Nordic UART-like BLE service (WebBLE)
+    "ble_name": "VBMDSCSWT", # BLE GAP/advertising device name
 
     # Calibration (starter anchors; overwrite via CAL FULL/EMPTY)
-    "cal_auto_learn": True,
-    "cal_empty_mm": 190.0,   # starter — run CAL EMPTY on the machine
-    "cal_full_mm": 50.0,     # starter — run CAL FULL on the machine
+    "cal_auto_learn": True,  # auto-track observed min/max to backstop missing anchors
+    "cal_empty_mm": 190.0,   # initial EMPTY anchor (mm) — replace via CAL EMPTY
+    "cal_full_mm": 50.0,     # initial FULL anchor (mm) — replace via CAL FULL
 
     # Behavior toggle
-    "allow_pump_at_low": True,  # if False: pump only when state==OK
+    "allow_pump_at_low": True,  # if False: pump allowed only in OK (not in LOW)
 
     # Storage & boot
-    "persist_path": "config.json",
-    "boot_grace_s": 3,
+    "persist_path": "config.json", # where config is persisted on the device filesystem
+    "boot_grace_s": 3,              # seconds after boot before becoming ready
 
     # Test mode
-    "test_period_s": 20,
+    "test_period_s": 20,      # period (seconds) for one full synthetic sweep in TEST mode
 }
 
 STATE_OK = "OK"
@@ -123,10 +148,11 @@ def clamp(x, a, b):
 # --------------------------- Sensor Driver ----------------------------------
 
 class DYPA02YY:
-    """
-    Robust reader for DYP-A02YY UART ultrasonic range finder.
-    Supports binary and ASCII variants via auto-detect.
-    Returns distance in millimeters or None on failure.
+    """Driver for DYP-A02YY (UART) ultrasonic sensor.
+
+    The sensor exists in binary and ASCII variants. We auto-detect a mode based
+    on the incoming bytes, and then parse accordingly. For robustness, invalid
+    frames are ignored and `None` is returned instead of raising.
     """
     def __init__(self, uart):
         self.uart = uart
@@ -134,6 +160,11 @@ class DYPA02YY:
         self._last_detect_t = 0
 
     def _detect_mode(self, buf):
+        """Guess protocol from a small sample buffer.
+
+        - Binary frames look like: 0xFF 0xXX 0xMM 0xMM
+        - ASCII streams contain digits separated by non-digits
+        """
         if len(buf) >= 4 and buf[0] == 0xFF:
             mm = (buf[2] << 8) | buf[3]
             if 0 < mm < 10000:
@@ -144,6 +175,13 @@ class DYPA02YY:
         return None
 
     def read_mm(self):
+        """Read the most recent distance in millimeters.
+
+        Returns
+        -------
+        int | None
+            Distance in mm, or None if no new valid reading is available.
+        """
         n = self.uart.any()
         if n <= 0:
             return None
@@ -198,6 +236,11 @@ class LevelEstimator:
         self.last_pct = None
 
     def _median(self, arr):
+        """Return median of a small list (copy/sort; n is tiny so OK).
+
+        Using a simple sorted copy keeps the implementation clear and avoids
+        external dependencies. Sensor rate is low, window small.
+        """
         a = sorted(arr)
         n = len(a)
         if n == 0:
@@ -206,6 +249,12 @@ class LevelEstimator:
         return (a[mid] if n % 2 == 1 else (a[mid-1] + a[mid]) / 2)
 
     def ingest_mm(self, mm):
+        """Push a raw millimeter reading through the filtering pipeline.
+
+        Steps: plausibility gate → median → EMA → percent mapping.
+        When calibration anchors are missing, fall back to observed min/max.
+        Returns a tuple of (ema_mm, pct) or (None, None) if not enough data.
+        """
         if mm is None:
             return None, None
         if not (self.cfg["min_mm"] <= mm <= self.cfg["max_mm"]):
@@ -237,6 +286,15 @@ class LevelEstimator:
         return self.ema, pct
 
     def decide_state(self):
+        """Hysteresis state machine based on the last computed percent.
+
+        States
+        ------
+        - OK: normal operation
+        - LOW: low tank; heater disabled, pump allowed (configurable)
+        - BOTTOM: empty; all interlocks off (safe)
+        - FAULT: no valid reading yet or timeout
+        """
         if self.last_pct is None:
             return STATE_FAULT
         low = self.cfg["low_pct"]
@@ -285,8 +343,9 @@ class SimpleBLE:
       * CAL FULL
       * CAL CLEAR
       * CFG?
+      * CFG RESET
     """
-    def __init__(self, name="VBM-Domobar-WaterTank"):
+    def __init__(self, name="VBMDSCSWT"):
         self.name = name
         self.ble = bluetooth.BLE()
         self.ble.active(True)
@@ -330,8 +389,38 @@ class SimpleBLE:
         elif event == 3:  # write
             conn_handle, value_handle = data
             if value_handle == self.rx_handle:
-                msg = self.ble.gatts_read(self.rx_handle)
-                self.on_command(msg.decode().strip())
+                try:
+                    # Read the value that was actually written
+                    raw = self.ble.gatts_read(value_handle)
+                except Exception:
+                    raw = None
+                if not raw:
+                    return
+                cmd_txt = None
+                try:
+                    cmd_txt = raw.decode().strip()
+                except Exception:
+                    return
+                # Process the command outside IRQ if possible
+                if micropython and hasattr(micropython, 'schedule'):
+                    def _run_cmd(_):
+                        try:
+                            self.on_command(cmd_txt)
+                        except Exception:
+                            pass
+                    try:
+                        micropython.schedule(_run_cmd, 0)
+                    except Exception:
+                        # Fallback to direct call (guarded)
+                        try:
+                            self.on_command(cmd_txt)
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        self.on_command(cmd_txt)
+                    except Exception:
+                        pass
 
     def on_command(self, cmd):
         pass
@@ -347,6 +436,11 @@ class SimpleBLE:
             try:
                 for i in range(0, len(data), chunk_size):
                     self.ble.gatts_notify(c, self.tx_handle, data[i:i+chunk_size])
+                    # Give the BLE stack time to flush to avoid dropping chunks
+                    try:
+                        time.sleep_ms(5)
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -354,6 +448,8 @@ class SimpleBLE:
 
 class WaterModule:
     def __init__(self):
+        # Load and merge persisted configuration with defaults.
+        # On first boot (no file), defaults are stored.
         self.cfg = load_config()
         # Helper om pins veilig te initialiseren; retourneert None bij ongeldige pin
         def _safe_pin(pin_no, description):
@@ -371,31 +467,37 @@ class WaterModule:
         self.pump_ok = _safe_pin(self.cfg["pump_ok_pin"], "pump_ok") if self.cfg["use_pump_ok"] else None
         self.heater_ok = _safe_pin(self.cfg["heater_ok_pin"], "heater_ok") if self.cfg["use_heater_ok"] else None
 
+        # Ensure a safe default (active-LOW → 1 = safe/off) at boot
         for pin in (self.interlock, self.pump_ok, self.heater_ok):
             if pin:
                 pin.value(1)  # safe default
 
+        # Sensor UART; DYP-A02YY runs at 9600-8N1
         self.uart = UART(self.cfg["uart_port"], baudrate=self.cfg["uart_baud"], tx=self.cfg["uart_tx"], rx=self.cfg["uart_rx"])
         self.sensor = DYPA02YY(self.uart)
         self.est = LevelEstimator(self.cfg)
 
+        # Optional BLE service for WebBluetooth dashboards
         self.ble = None
         if self.cfg["ble_enabled"] and bluetooth is not None:
             self.ble = SimpleBLE(self.cfg["ble_name"])
             self.ble.on_command = self._on_ble_command
 
+        # Watchdog to recover from stalls; fed in the sense loop
         self.wdt = WDT(timeout=2000)
         self._last_read_ms = time.ticks_ms()
         self._boot_t0 = time.ticks_ms()
+        # Becomes True after a short grace period and first valid reading
         self._ready = False
 
-        # Test mode state
+        # Test mode state: synthetic sweep replaces sensor input when enabled
         self.test_active = False
         self._test_t0 = None
 
     # BLE commands
     def _on_ble_command(self, cmd):
         cmd = cmd.strip().upper()
+        # Lightweight command parser. Commands are intentionally simple.
         if cmd == "INFO?" and self.ble:
             info = {
                 "state": self.est.state,
@@ -410,9 +512,16 @@ class WaterModule:
             keys = [
                 "uart_port","uart_rx","uart_tx","sample_hz","bottom_pct","low_pct","hysteresis_pct",
                 "interlock_active","use_pump_ok","use_heater_ok","min_mm","max_mm","timeout_ms",
-                "allow_pump_at_low"
+                "allow_pump_at_low",
+                # Include BLE fields so clients can verify/reset device identity
+                "ble_enabled","ble_name"
             ]
             slim = {k:self.cfg.get(k) for k in keys}
+            try:
+                # Log a SYS marker to make debugging easier on the dashboard
+                self.ble.notify(json.dumps({"evt":"sys","msg":"cfg_sent","num_keys": len(slim)}))
+            except Exception:
+                pass
             self.ble.notify(json.dumps(slim))
         elif cmd == "CAL EMPTY":
             v = self.est.ema
@@ -496,6 +605,13 @@ class WaterModule:
 
     # Heartbeat
     async def _heartbeat(self):
+        """LED heartbeat pattern encoding the current state.
+
+        OK: short blink every second
+        LOW: two quick blinks
+        BOTTOM: three quick blinks
+        FAULT/not-ready: long on, short off
+        """
         while True:
             if self.led:
                 st = self.est.state
@@ -520,6 +636,13 @@ class WaterModule:
 
     # Sensor loop
     async def _sense_loop(self):
+        """Main sensor loop.
+
+        - Feeds the watchdog
+        - Reads sensor or generates test values
+        - Updates filtering and state
+        - Applies safety outputs
+        """
         period = max(0.02, 1.0 / float(self.cfg["sample_hz"]))
         last_valid_ms = time.ticks_ms()
         while True:
@@ -598,6 +721,7 @@ class WaterModule:
 
     # Periodic BLE push
     async def _ble_status(self):
+        """Push a compact JSON status snapshot every ~2s over BLE."""
         while True:
             if self.ble:
                 msg = {
