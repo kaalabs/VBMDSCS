@@ -1,6 +1,6 @@
-# Watertank Module Firmware (ESP32‑S3)
+# Watertank Module Firmware (ESP32‑S3, MicroPython 1.25)
 
-Firmware voor de watertankmodule (ESP32‑S3, MicroPython) die het waterniveau meet via een DYP‑A02YY
+Firmware voor de watertankmodule (ESP32‑S3, MicroPython 1.25) die het waterniveau meet via een DYP‑A02YY
 ultrasone sensor en interlock‑uitgangen aanstuurt.
 
 ## Configuratie
@@ -11,7 +11,7 @@ Wordt `config.json` weggelaten, dan gebruikt de firmware de ingebouwde defaults.
 
 ## Flashen en uploaden (ESP32‑S3)
 
-1. **Flash MicroPython** op de ESP32‑S3 (macOS voorbeeld):
+1. **Flash MicroPython 1.25** op de ESP32‑S3 (macOS voorbeeld):
    ```bash
    # Poort kan bv. /dev/tty.usbmodem1101 zijn
    esptool.py --chip esp32s3 --port /dev/tty.usbmodem1101 erase_flash
@@ -34,7 +34,7 @@ Wordt `config.json` weggelaten, dan gebruikt de firmware de ingebouwde defaults.
 3. **Reset** het board; `main.py` start automatisch. Kalibreer daarna via het
    WebBLE‑dashboard (`CAL FULL` / `CAL EMPTY`).
 
-### BLE tips (ESP32‑S3 / MicroPython)
+### BLE tips (ESP32‑S3 / MicroPython 1.25)
 - Advertentie‑payload is max. 31 bytes. Zet services eerst en gebruik een verkorte naam indien nodig.
 - Gebruik connectable advertising. De firmware regelt dit automatisch.
 - WebBluetooth vereist HTTPS of `http://localhost`. Dashboard: `web-dashboard/watertank_module/watertank_module_webble.html`.
