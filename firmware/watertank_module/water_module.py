@@ -1,4 +1,4 @@
-"""WaterTank core module for ESP32 (MicroPython).
+"""WaterTank core module for ESP32-S3 (MicroPython).
 
 Core logic managing the water level sensor, filtering, BLE interface and
 safety interlocks. Split out from the original monolithic main.py for
