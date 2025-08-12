@@ -11,5 +11,9 @@
   "cal_full_mm": 50,
   "cal_empty_mm": 190,
   "allow_pump_at_low": true,
-  "log_level": "info"
+  "log_level": "info",
+  "ble_enabled": true,
+  "ble_name": "VBMDSCSWT",
+  "use_pump_ok": false,
+  "use_heater_ok": false
 }

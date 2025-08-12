@@ -1,5 +1,5 @@
 from machine import Pin
-from water_module import WaterModule, log, DEFAULT_CONFIG
+from watertank_module.water_module import WaterModule, log, DEFAULT_CONFIG
 
 
 def main():
