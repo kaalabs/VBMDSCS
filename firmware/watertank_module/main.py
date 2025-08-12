@@ -109,6 +109,9 @@ DEFAULT_CONFIG = {
     # Behavior toggle
     "allow_pump_at_low": True,  # if False: pump allowed only in OK (not in LOW)
 
+    # Logging
+    "log_level": "info",       # one of: "err", "warn", "info"
+
     # Storage & boot
     "persist_path": "config.json", # where config is persisted on the device filesystem
     "boot_grace_s": 3,              # seconds after boot before becoming ready
@@ -121,6 +124,17 @@ STATE_OK = "OK"
 STATE_LOW = "LOW"
 STATE_BOTTOM = "BOTTOM"
 STATE_FAULT = "FAULT"
+
+LOG_LEVELS = {"err": 0, "warn": 1, "info": 2}
+_LOG_LEVEL = LOG_LEVELS.get(DEFAULT_CONFIG.get("log_level", "info"), 2)
+
+def set_log_level(level):
+    global _LOG_LEVEL
+    _LOG_LEVEL = LOG_LEVELS.get(level, 2)
+
+def log(level, msg):
+    if LOG_LEVELS.get(level, 2) <= _LOG_LEVEL:
+        print(f"[{level.upper()}] {msg}")
 
 # ------------------------------ Utilities -----------------------------------
 
@@ -140,7 +154,7 @@ def save_config(cfg):
         with open(cfg["persist_path"], "w") as f:
             f.write(json.dumps(cfg))
     except Exception as e:
-        print("Config save error:", e)
+        log("err", f"Config save error: {e}")
 
 def clamp(x, a, b):
     return a if x < a else (b if x > b else x)
@@ -451,6 +465,7 @@ class WaterModule:
         # Load and merge persisted configuration with defaults.
         # On first boot (no file), defaults are stored.
         self.cfg = load_config()
+        set_log_level(self.cfg.get("log_level", "info"))
         # Helper om pins veilig te initialiseren; retourneert None bij ongeldige pin
         def _safe_pin(pin_no, description):
             if pin_no is None:
@@ -458,7 +473,7 @@ class WaterModule:
             try:
                 return Pin(pin_no, Pin.OUT)
             except Exception as e:
-                print("Warn:", f"invalid {description} pin {pin_no}:", e)
+                log("warn", f"invalid {description} pin {pin_no}: {e}")
                 return None
 
         self.led = _safe_pin(self.cfg["led_pin"], "led") if self.cfg["led_pin"] is not None else None
@@ -748,13 +763,13 @@ class WaterModule:
 
 def main():
     mod = WaterModule()
-    print("WaterModule starting with config:", mod.cfg)
+    log("info", f"WaterModule starting with config: {mod.cfg}")
     try:
         mod.run()
     except KeyboardInterrupt:
-        print("Stopped")
+        log("info", "Stopped")
     except Exception as e:
-        print("Fatal:", e)
+        log("err", f"Fatal: {e}")
         for pin_no in ("interlock_pin","pump_ok_pin","heater_ok_pin"):
             try:
                 p = Pin(DEFAULT_CONFIG[pin_no], Pin.OUT)
