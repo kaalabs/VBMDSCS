@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VBM Domobar Waterniveau — Pure CSS Dashboard</title>
+  <title>VBM Domobar Standaard Control System - Waterniveau</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232563eb'/%3E%3Cstop offset='1' stop-color='%2316a34a'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='4' y='4' width='56' height='56' rx='12' fill='url(%23g)'/%3E%3Cpath d='M32 12 C 20 28 20 28 32 48 C 44 28 44 28 32 12 Z' fill='%23fff'/%3E%3C/svg%3E" />
   <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232563eb'/%3E%3Cstop offset='1' stop-color='%2316a34a'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='4' y='4' width='56' height='56' rx='12' fill='url(%23g)'/%3E%3Cpath d='M32 12 C 20 28 20 28 32 48 C 44 28 44 28 32 12 Z' fill='%23fff'/%3E%3C/svg%3E" />
   <!--
@@ -60,10 +60,16 @@
     .uh-dot.ok { background: var(--good); }
     .uh-dot.low { background: var(--warn); }
     .uh-dot.bottom, .uh-dot.fault { background: var(--bad); }
+
+/* Test indicator (user mode) */
+.test-ind { display:flex; align-items:center; gap:8px; border:1px dashed var(--blue); background:#eff6ff; color:#1e40af; border-radius:8px; padding:6px 8px; width:100%; }
+.ti-dot { width:10px; height:10px; border-radius:50%; background:var(--blue); animation:pulse 1s infinite; }
+@keyframes pulse { 0%{opacity:.3} 50%{opacity:1} 100%{opacity:.3} }
+
   </style>
 </head>
 <body>
-  <h1>VBM Domobar Waterniveau</h1>
+  <h1>VBM Domobar Standaard Control System - Waterniveau</h1>
 
   <div class="card">
     <div class="row">
@@ -90,6 +96,13 @@
       <span id="pct">—</span>
     </div>
     <div class="bar" id="lvlBar"><div id="lvlFill"></div></div>
+    <div class="row user hidden" id="testIndicatorRow" style="margin-top:6px; width:100%;">
+      <div class="test-ind">
+        <span class="ti-dot"></span>
+        <strong>Testcyclus actief</strong>
+        <span class="muted">Sommige waarden kunnen tijdelijk afwijken.</span>
+      </div>
+    </div>
     <div class="row user" id="userHintRow" style="margin-top:6px; width:100%;">
       <div id="userHintBox" class="user-hint">
         <span id="userHintDot" class="uh-dot"></span>
@@ -191,6 +204,7 @@
     userHint: document.getElementById('userHint'),
     btnCfgReset: document.getElementById('btnCfgReset'),
     btnExportLog: document.getElementById('btnExportLog'),
+    testIndicatorRow: document.getElementById('testIndicatorRow'),
   };
 
   let device=null, server=null, rxChar=null, txChar=null, buffer='';
@@ -198,6 +212,7 @@
   let testPollTimer = null;
   let isExpert = false;
   let lastState = null, lastPct = null, lastReady = null;
+  let testActive = false;
 
   function now() { return new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
   function log(line, kind) {
@@ -265,6 +280,12 @@
     ui.lvlFill.style.width = (v == null) ? '0%' : v + '%';
   }
 
+  function setTestIndicator(on){
+    testActive = !!on;
+    if (testActive && !isExpert) ui.testIndicatorRow.classList.remove('hidden');
+    else ui.testIndicatorRow.classList.add('hidden');
+  }
+
   function* extractJson(stream){ let d=0,s=-1; for(let i=0;i<stream.length;i++){ const c=stream[i]; if(c==='{' ){ if(d===0) s=i; d++; } else if(c==='}'){ d--; if(d===0 && s!==-1){ yield stream.slice(s,i+1); s=-1; } } } }
 
   function enableCmds(on) { ui.cmds.forEach(b => b.disabled = !on); ui.btnAutoCal.disabled = !on; }
@@ -283,6 +304,7 @@
     });
     // Bij modewissel de hint updaten met laatste bekende waarden
     setUserHint(lastState, lastPct, lastReady);
+    setTestIndicator(testActive);
   }
   async function sendCmd(txt){ if(!rxChar) return; await rxChar.writeValue(new TextEncoder().encode(txt)); log('> '+txt, 'send'); }
 
@@ -367,6 +389,7 @@
     enableCmds(false);
     setConn('idle');
     log('Bluetooth disconnected', 'warn');
+    setTestIndicator(false);
     if (ui.autoReconnect.checked && device){
       if (!reconnectTimer) reconnectTimer = setInterval(reconnect, 2000);
       setTimeout(reconnect, 1000);
@@ -406,6 +429,7 @@
           } else if (!active && testPollTimer) {
             clearInterval(testPollTimer); testPollTimer = null;
           }
+          setTestIndicator(active);
         }
         // Toon expliciet CFG en INFO responses in het paneel (ook als er 'state' in zit)
         const isCfg = ('uart_port' in o) || ('uart_rx' in o) || ('uart_tx' in o)
@@ -441,8 +465,10 @@
     // Start/stop test fallback poll immediately on user action
     if (cmd === 'TEST START') {
       if (!testPollTimer) testPollTimer = setInterval(() => { if (rxChar) sendCmd('INFO?'); }, 1000);
+      setTestIndicator(true);
     } else if (cmd === 'TEST STOP') {
       if (testPollTimer) { clearInterval(testPollTimer); testPollTimer = null; }
+      setTestIndicator(false);
     }
     sendCmd(cmd);
   }));
@@ -456,6 +482,7 @@
 
   // Init
   setConn('idle'); setStateBadge('—'); setReadyBadge(null); updateGauge(null);
+  setTestIndicator(false);
   // Restore mode
   try { ui.modeExpert.checked = (localStorage.getItem('wt_mode') === 'expert'); } catch(e){}
   applyMode();
