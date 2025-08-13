@@ -50,14 +50,19 @@ class SimpleBLE:
             self._tx_val_handle = service_handles
             self._rx_val_handle = None
         self.connections = set()
+
+        # Simple BLE: no TX queue; notify sends directly with small delay per chunk
+        
+        # Ensure we start advertising immediately
+        self._start_adv()
+
+    def _now_ms(self):
         try:
-            adv = self._adv_payload(name=self.name, services=[self._UART_UUID_STR])
-            try:
-                self.ble.gap_advertise(500_000, adv_data=adv, connectable=True)
-            except Exception:
-                self.ble.gap_advertise(500_000, adv_data=adv)
+            return time.ticks_ms()
         except Exception:
-            pass
+            # Fallback for environments without ticks_ms
+            return int(time.time() * 1000)
+        
 
     def _uuid128_le(self, uuid_str):
         """Convert UUID string to 128-bit little-endian bytes without slicing step."""
@@ -129,7 +134,8 @@ class SimpleBLE:
                     return
                 cmd_txt = None
                 try:
-                    cmd_txt = raw.decode().strip()
+                    # Accept LF or CRLF terminated commands
+                    cmd_txt = raw.decode().replace('\r','').strip()
                 except Exception:
                     return
                 if micropython and hasattr(micropython, "schedule"):
@@ -165,18 +171,19 @@ class SimpleBLE:
         if text is None:
             return
         if not self.connections:
-            return  # No connections, skip notification
-            
+            return
         data = text if isinstance(text, bytes) else text.encode()
+        # Send in 18-byte chunks with small delay
         chunk_size = 18
-        
         for c in list(self.connections):
             try:
                 for i in range(0, len(data), chunk_size):
-                    self.ble.gatts_notify(c, self._tx_val_handle, data[i:i + chunk_size])
-                    time.sleep_ms(5)
+                    self.ble.gatts_notify(c, self._tx_val_handle, data[i:i+chunk_size])
+                    try:
+                        time.sleep_ms(5)
+                    except Exception:
+                        pass
             except Exception:
-                # Remove invalid connection
                 try:
                     self.connections.remove(c)
                 except ValueError:

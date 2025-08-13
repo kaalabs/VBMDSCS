@@ -37,11 +37,17 @@
 
   let device=null, server=null, rxChar=null, txChar=null, buffer='';
   let reconnectTimer = null;
-  let testPollTimer = null;
+  // Polling timer placeholder (kept to avoid ReferenceErrors in existing logic)
+  let testPollTimer = null; // not used for periodic INFO? anymore
   let isExpert = false;
   let lastState = null, lastPct = null, lastReady = null;
   let testActive = false;
+  let lastTestActive = null;
   let currentTestId = null;  // Track current test session ID
+  // Robustness controls
+  let preferTestStream = false;    // When true, ignore non-test state/pct for UI
+  let lastTestMsgTs = 0;           // ms timestamp of last test message
+  const TEST_INACTIVE_DEBOUNCE_MS = 1500;
 
   function now() { return new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
   function log(line, kind) {
@@ -110,28 +116,17 @@
   }
 
   function setTestIndicator(on){
+    const prev = testActive;
     testActive = !!on;
     if (testActive && !isExpert) ui.testIndicatorRow.classList.remove('hidden');
     else ui.testIndicatorRow.classList.add('hidden');
     
-    // Force update the UI when test indicator changes
-    if (!testActive) {
-      // Clear any test-related display elements
+    // Only on transition from true -> false, do a single aggressive reset
+    if (prev && !testActive) {
       log('Test indicator cleared, performing aggressive reset');
-      
-      // Clear any test-related timers
-      if (testPollTimer) {
-        clearInterval(testPollTimer);
-        testPollTimer = null;
-        log('Test poll timer cleared');
-      }
-      
-      // Force a status refresh by requesting INFO
+      if (testPollTimer) { clearInterval(testPollTimer); testPollTimer = null; log('Test poll timer cleared'); }
       if (rxChar) {
-        setTimeout(() => {
-          sendCmd('INFO?');
-          log('Forced INFO request after test indicator reset');
-        }, 100);
+        setTimeout(() => { sendCmd('INFO?'); log('Forced INFO request after test indicator reset'); }, 120);
       }
     }
   }
@@ -156,7 +151,19 @@
     setUserHint(lastState, lastPct, lastReady);
     setTestIndicator(testActive);
   }
-  async function sendCmd(txt){ if(!rxChar) return; await rxChar.writeValue(new TextEncoder().encode(txt)); log('> '+txt, 'send'); }
+  async function sendCmd(txt){
+    if(!rxChar) { log('Niet verbonden', 'error'); return; }
+    try{
+      // Use CRLF to maximize compatibility
+      let payload = txt;
+      if (!payload.endsWith('\n')) payload += '\n';
+      if (!payload.endsWith('\r\n')) payload = payload.replace(/\n$/,'\r\n');
+      await rxChar.writeValue(new TextEncoder().encode(payload));
+      log('> '+txt, 'send');
+    }catch(e){
+      log('Commando versturen faalde: ' + (e.message||e), 'error');
+    }
+  }
 
   async function setupGatt(){
     const svc = await server.getPrimaryService(UART_SERVICE);
@@ -252,18 +259,21 @@
       try{
         const o = JSON.parse(js);
         log(`[BLE] Raw message received: ${js}`, 'warn');
-        if ('state' in o) { 
+        const isTestEvent = (o.evt === 'test');
+        // During test, only apply state/pct from test stream to avoid mixed sources
+        const allowStatusApply = !preferTestStream || isTestEvent;
+        if ('state' in o && allowStatusApply) {
           log(`[DASHBOARD] State update: ${o.state} (was: ${lastState})`, 'warn');
           if ('DEBUG_test_level' in o) {
             log(`[DASHBOARD] DEBUG - test_level: ${o.DEBUG_test_level}, current_level: ${o.DEBUG_current_level}, sensor_valid: ${o.DEBUG_sensor_valid}`, 'warn');
           }
-          setStateBadge(o.state); 
-          lastState = o.state; 
+          setStateBadge(o.state);
+          lastState = o.state;
         }
-        if ('pct' in o) { 
+        if ('pct' in o && allowStatusApply) {
           log(`[DASHBOARD] Pct update: ${o.pct}% (was: ${lastPct}%)`, 'warn');
-          updateGauge(o.pct); 
-          lastPct = o.pct; 
+          updateGauge(o.pct);
+          lastPct = o.pct;
         }
         // Extra velden uit firmware tonen
         if ('ready' in o) { setReadyBadge(o.ready); lastReady = o.ready; }
@@ -277,15 +287,21 @@
         setUserHint(lastState, lastPct, lastReady);
         // Test events/status
         if (o.evt === 'test') {
+          // Any test event implies active test stream; prefer it for UI
+          preferTestStream = true;
+          lastTestMsgTs = Date.now();
           // Check if this is from the current test session
           if ('test_data_id' in o) {
-            if (currentTestId === null || o.test_data_id === currentTestId) {
-              // This is current test data, process it
+            // Accept equal or newer sessions; update when a newer id arrives
+            if (currentTestId === null || o.test_data_id >= currentTestId) {
+              if (currentTestId !== o.test_data_id) {
+                currentTestId = o.test_data_id;
+                log('Switched to test session ' + currentTestId);
+              }
               log('TEST: ' + (o.msg || JSON.stringify(o)), 'warn');
             } else {
-              // This is old test data, ignore it
               log('Ignoring old test data from session ' + o.test_data_id + ' (current: ' + currentTestId + ')', 'warn');
-              continue;  // Skip processing this message
+              continue;
             }
           } else {
             // No test ID, process normally
@@ -335,19 +351,27 @@
         }
         if ('test_active' in o) {
           const active = !!o.test_active;
-          log('TEST active: ' + (active ? 'yes' : 'no'));
-          
+          if (lastTestActive !== active) {
+            log('TEST active: ' + (active ? 'yes' : 'no'));
+            lastTestActive = active;
+          }
+          if (active) {
+            preferTestStream = true;
+            lastTestMsgTs = Date.now();
+          } else {
+            // Debounce switching off to avoid flapping on mixed messages
+            const nowTs = Date.now();
+            if (nowTs - lastTestMsgTs > TEST_INACTIVE_DEBOUNCE_MS) {
+              preferTestStream = false;
+            } else {
+              // Ignore transient inactive indications while test messages are recent
+              log('Ignoring transient test inactive due to debounce window', 'warn');
+            }
+          }
           // Update test ID if provided
           if ('test_data_id' in o) {
             currentTestId = o.test_data_id;
             log('Test session ID: ' + currentTestId);
-          }
-          
-          // Start/stop fallback polling tijdens testmodus
-          if (active && !testPollTimer) {
-            testPollTimer = setInterval(() => { if (rxChar) sendCmd('INFO?'); }, 1000);
-          } else if (!active && testPollTimer) {
-            clearInterval(testPollTimer); testPollTimer = null;
           }
           setTestIndicator(active);
         }
@@ -361,13 +385,13 @@
           }
         }
         // Toon expliciet CFG en INFO responses in het paneel (ook als er 'state' in zit)
-        const isCfg = ('uart_port' in o) || ('uart_rx' in o) || ('uart_tx' in o)
+        const isCfg = !isTestEvent && (('uart_port' in o) || ('uart_rx' in o) || ('uart_tx' in o)
           || ('min_mm' in o) || ('max_mm' in o) || ('timeout_ms' in o) || ('sample_hz' in o)
           || ('hysteresis_pct' in o) || ('low_pct' in o) || ('bottom_pct' in o)
           || ('allow_pump_at_low' in o) || ('interlock_active' in o) || ('use_pump_ok' in o) || ('use_heater_ok' in o)
           // Also treat BLE identity fields as CFG so we always render the config dump
-          || ('ble_enabled' in o) || ('ble_name' in o);
-        const isInfo = ('cal_empty_mm' in o) || ('cal_full_mm' in o);
+          || ('ble_enabled' in o) || ('ble_name' in o));
+        const isInfo = !isTestEvent && (('cal_empty_mm' in o) || ('cal_full_mm' in o));
         if (isCfg || isInfo) {
           try {
             ui.cfgDump.textContent = JSON.stringify(o, null, 2);
@@ -395,17 +419,26 @@
   // Bindings
   ui.btnConnect.addEventListener('click', connect);
   ui.btnDisconnect.addEventListener('click', disconnect);
-  ui.cmds.forEach(b => b.addEventListener('click', () => {
+  ui.cmds.forEach(b => b.addEventListener('click', async () => {
     const cmd = b.dataset.cmd;
-    // Start/stop test fallback poll immediately on user action
+    // Do not poll INFO? during test; rely solely on test stream
     if (cmd === 'TEST START') {
-      if (!testPollTimer) testPollTimer = setInterval(() => { if (rxChar) sendCmd('INFO?'); }, 1000);
+      if (testPollTimer) { clearInterval(testPollTimer); testPollTimer = null; }
       setTestIndicator(true);
     } else if (cmd === 'TEST STOP') {
       if (testPollTimer) { clearInterval(testPollTimer); testPollTimer = null; }
       setTestIndicator(false);
     }
-    sendCmd(cmd);
+    await sendCmd(cmd);
+    // After TEST START/STOP, request a quick confirmation snapshot
+    if (cmd === 'TEST START' || cmd === 'TEST STOP') {
+      try {
+        await delay(120);
+        await sendCmd('TEST?');
+        await delay(120);
+        await sendCmd('INFO?');
+      } catch {}
+    }
   }));
   ui.btnAutoCal.addEventListener('click', openSteps);
   ui.stepNext.addEventListener('click', nextStep);

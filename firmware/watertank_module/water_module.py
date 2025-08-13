@@ -102,6 +102,16 @@ class WaterModule:
         self.ready = False
         self.last_sensor_time = 0
         self.boot_time = time.time()
+        # Monotonic timers (ms) for reliable 1 Hz scheduling
+        try:
+            self._now_ms = time.ticks_ms
+            self._diff_ms = time.ticks_diff
+        except Exception:
+            self._now_ms = lambda: int(time.time() * 1000)
+            self._diff_ms = lambda a, b: a - b
+        self._last_test_ble_ms = 0
+        self._last_status_ms = 0
+        self.test_pct = None
         
     def _init_pins(self):
         try:
@@ -192,32 +202,47 @@ class WaterModule:
         
         return pct
     
-    def _generate_test_data(self):
+    def _generate_test_data(self, force_send=False):
         if not self.test_data_active:
             return
         
         elapsed = time.time() - self.test_start_time
         period = self.cfg["test_period_s"]
+        if period <= 0:
+            period = 20
+        # Generate sawtooth percentage (100 -> 0 over 'period')
+        frac = (elapsed % period) / period
+        self.test_pct = max(0.0, min(100.0, 100.0 * (1.0 - frac)))
+        # Map pct to a test_level within calibration range for display
+        full_mm = self.cfg.get("cal_full_mm", self.cfg["min_mm"])
+        empty_mm = self.cfg.get("cal_empty_mm", self.cfg["max_mm"])
+        try:
+            if full_mm < empty_mm:
+                # 100% -> full_mm, 0% -> empty_mm
+                self.test_level = full_mm + (empty_mm - full_mm) * (1.0 - self.test_pct / 100.0)
+            else:
+                self.test_level = empty_mm + (full_mm - empty_mm) * (self.test_pct / 100.0)
+        except Exception:
+            # Fallback to min/max range
+            level_range = self.cfg["max_mm"] - self.cfg["min_mm"]
+            self.test_level = self.cfg["min_mm"] + (1.0 - self.test_pct / 100.0) * level_range
+        # Derive state from pct (ignore sensor flags during test)
+        if self.test_pct <= self.cfg["bottom_pct"]:
+            self.current_state = STATE_BOTTOM
+        elif self.test_pct <= self.cfg["low_pct"]:
+            self.current_state = STATE_LOW
+        else:
+            self.current_state = STATE_OK
         
-        # Generate sine wave pattern for test
-        phase = (elapsed % period) / period * 2 * math.pi
-        level_range = self.cfg["max_mm"] - self.cfg["min_mm"]
-        self.test_level = self.cfg["min_mm"] + (math.sin(phase) + 1) / 2 * level_range
-        
-        # Update state based on test level
-        pct = self._update_level_state_from_level(self.test_level)
-        
-        # Limit BLE updates to max 1x per second for stability
-        current_time = time.time()
-        if not hasattr(self, '_last_test_ble_time'):
-            self._last_test_ble_time = 0
+        # Limit BLE updates to max 1x per second for stability (unless forced)
+        now_ms = self._now_ms()
             
         # Send test data via BLE - use same format as _send_status for consistency
-        if self.ble and (current_time - self._last_test_ble_time >= 1.0):
+        if self.ble and (force_send or (self._diff_ms(now_ms, self._last_test_ble_ms) >= 1000)):
             test_data = {
                 # Core status fields (same as _send_status)
                 "state": self.current_state,
-                "pct": pct,
+                "pct": self.test_pct,
                 "ready": self.ready,
                 "test_active": True,
                 "current_level_mm": self.test_level,
@@ -228,7 +253,6 @@ class WaterModule:
                 
                 # Test specific fields
                 "evt": "test",
-                "msg": f"Test data: level={self.test_level:.1f}mm, pct={pct:.1f}%, state={self.current_state}",
                 "test_data_id": self.test_data_id,
                 "test_elapsed": elapsed,
                 "test_period": period,
@@ -240,14 +264,18 @@ class WaterModule:
                 "DEBUG_test_data_active": self.test_data_active
             }
             try:
-                self.ble.notify(json.dumps(test_data))
+                payload = json.dumps(test_data)
+                if force_send and hasattr(self.ble, 'notify_priority'):
+                    self.ble.notify_priority(payload)
+                else:
+                    self.ble.notify(payload)
                 log("info", f"Test data sent via BLE")
-                self._last_test_ble_time = current_time
+                self._last_test_ble_ms = now_ms
             except Exception as e:
                 log("error", f"Failed to send test data: {e}")
         
         # Always log test data locally (even if not sent via BLE due to rate limiting)
-        log("info", f"Test data: level={self.test_level:.1f}mm, pct={pct:.1f}%, state={self.current_state}")
+        log("info", f"Test data: level={self.test_level:.1f}mm, pct={self.test_pct:.1f}%, state={self.current_state}")
     
     def _read_sensor(self):
         try:
@@ -330,21 +358,31 @@ class WaterModule:
         self.test_level = self.current_level
         log("info", f"Test mode started, ID: {self.test_data_id}, initial test level: {self.test_level:.1f}mm")
         
-        # Send immediate status update after test start
-        self._send_status()
+        # Reset test BLE timer so we can send immediately
+        self._last_test_ble_ms = 0
         
+        # Send immediate small start event with priority if available
         if self.ble:
             try:
                 test_start_data = {
                     "evt": "test",
-                    "msg": "Test mode started",
                     "test_active": True,
                     "test_data_id": self.test_data_id
                 }
-                self.ble.notify(json.dumps(test_start_data))
+                payload = json.dumps(test_start_data)
+                if hasattr(self.ble, 'notify_priority'):
+                    self.ble.notify_priority(payload)
+                else:
+                    self.ble.notify(payload)
                 log("info", "Test start notification sent via BLE")
             except Exception as e:
                 log("error", f"Failed to send test start: {e}")
+        
+        # Send first test data immediately to kick the dashboard
+        try:
+            self._generate_test_data(force_send=True)
+        except Exception as e:
+            log("error", f"Failed to send initial test data: {e}")
     
     def stop_test(self):
         log("info", f"[TRACE] stop_test() CALLED")
@@ -428,20 +466,14 @@ class WaterModule:
                     # This prevents overwriting the correct state set in stop_test()
                     self._update_level_state()
                 
+                # No explicit flush with simple notify
+
                 # Send status periodically - but NOT during test mode to avoid BLE conflicts
-                # Test data already includes all status info
-                current_time = time.time()
-                if not hasattr(self, '_last_status_time'):
-                    self._last_status_time = current_time
-                
-                # Only send separate status updates when NOT in test mode
-                if not self.test_active and (current_time - self._last_status_time >= 1.0):
+                now_ms = self._now_ms()
+                if not self.test_active and (self._diff_ms(now_ms, self._last_status_ms) >= 1000):
                     log("info", f"[TRACE] Main loop sending status - test_active={self.test_active}")
                     self._send_status()
-                    self._last_status_time = current_time
-                elif self.test_active:
-                    # Reset timer during test so we resume status after test stops
-                    self._last_status_time = current_time
+                    self._last_status_ms = now_ms
                 
                 # Blink LED
                 if self.cfg["led_pin"]:
