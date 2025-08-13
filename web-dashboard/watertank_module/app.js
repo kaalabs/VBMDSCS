@@ -2,6 +2,7 @@
   const UART_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
   const UART_RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // write
   const UART_TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // notify
+  const BLE_NAME = 'VBMCSWT'; // filter op exact naam of prefix
 
   // UI refs
   const ui = {
@@ -174,7 +175,14 @@
   }
 
   async function chooseAndConnect(){
-    const dev = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [UART_SERVICE] });
+    // Gefilterde scan: toon alleen ons device op naam
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [
+        { name: BLE_NAME },
+        { namePrefix: BLE_NAME },
+      ],
+      optionalServices: [UART_SERVICE]
+    });
     device = dev; device.addEventListener('gattserverdisconnected', onDisc);
     server = await device.gatt.connect();
     await setupGatt();
