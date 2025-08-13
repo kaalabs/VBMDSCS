@@ -7,6 +7,7 @@ import sys
 import os
 from machine import UART, Pin
 import math
+import gc
 
 try:
     import bluetooth
@@ -120,6 +121,14 @@ class WaterModule:
                 pin = Pin(pin_num, Pin.OUT)
                 pin.value(1)  # Safe state
                 log("info", f"Pin {pin_num} ({pin_name}) initialized to safe")
+            # Initialize LED once for stable blinking
+            self.led = None
+            try:
+                if self.cfg.get("led_pin"):
+                    self.led = Pin(self.cfg["led_pin"], Pin.OUT)
+                    self.led.value(0)
+            except Exception:
+                self.led = None
         except Exception as e:
             log("error", f"Pin initialization failed: {e}")
     
@@ -454,34 +463,48 @@ class WaterModule:
         
         try:
             while True:
-                self._check_ready()
-                
-                if self.uart:
-                    self._read_sensor()
-                
-                if self.test_active:
-                    self._generate_test_data()
-                else:
-                    # Only update level state when NOT in test mode
-                    # This prevents overwriting the correct state set in stop_test()
-                    self._update_level_state()
-                
-                # No explicit flush with simple notify
+                try:
+                    self._check_ready()
+                    
+                    if self.uart:
+                        self._read_sensor()
+                    
+                    if self.test_active:
+                        self._generate_test_data()
+                    else:
+                        # Only update level state when NOT in test mode
+                        # This prevents overwriting the correct state set in stop_test()
+                        self._update_level_state()
+                    
+                    # No explicit flush with simple notify
 
-                # Send status periodically - but NOT during test mode to avoid BLE conflicts
-                now_ms = self._now_ms()
-                if not self.test_active and (self._diff_ms(now_ms, self._last_status_ms) >= 1000):
-                    log("info", f"[TRACE] Main loop sending status - test_active={self.test_active}")
-                    self._send_status()
-                    self._last_status_ms = now_ms
-                
-                # Blink LED
-                if self.cfg["led_pin"]:
+                    # Send status periodically - but NOT during test mode to avoid BLE conflicts
+                    now_ms = self._now_ms()
+                    if not self.test_active and (self._diff_ms(now_ms, self._last_status_ms) >= 1000):
+                        log("info", f"[TRACE] Main loop sending status - test_active={self.test_active}")
+                        self._send_status()
+                        self._last_status_ms = now_ms
+                    
+                    # Watchdog: if test is active but no test packet in 1.5s, force one
+                    if self.test_active and (self._diff_ms(now_ms, self._last_test_ble_ms) >= 1500):
+                        self._generate_test_data(force_send=True)
+                        self._last_test_ble_ms = now_ms
+                    
+                    # Blink LED using initialized pin
+                    if getattr(self, 'led', None) is not None:
+                        try:
+                            self.led.value(0 if self.led.value() else 1)
+                        except Exception:
+                            pass
+                    
+                    # Periodic garbage collection to avoid fragmentation
                     try:
-                        led = Pin(self.cfg["led_pin"], Pin.OUT)
-                        led.toggle()
-                    except:
+                        gc.collect()
+                    except Exception:
                         pass
+                except Exception as loop_err:
+                    # Log and continue; never let the loop die
+                    log("err", f"Loop error: {loop_err}")
                 
                 time.sleep(1.0 / self.cfg["sample_hz"])
                 
