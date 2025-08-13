@@ -13,31 +13,47 @@ Een mastermodule orkestreert het geheel en levert de UI. Voor WebBLE-diagnose is
 4. **Eenvoudig** — originele gebruikerservaring blijft leidend; nerd-features optioneel.
 5. **Non-invasief** — respecteert machine; hardware-interlocks voor echte fail-safety.
 
-## Repository-structuur (suggestie)
+## Repository-structuur
 ```
 firmware/
   watertank_module/
-    main.py         # MicroPython 1.25 code (ESP32-WROOM-32E)
-    config.json     # Domobar-tuned defaults
+    main.py                    # MicroPython 1.25 code (ESP32-S3)
+    water_module.py            # Core watertank functionaliteit
+    dypa02yy.py               # DYP-A02YY sensor driver
+    level_estimator.py         # Waterniveau berekening en filtering
+    display.py                 # LCD display interface
+    simple_ble.py              # Bluetooth Low Energy service
+    console_test.py            # Serial console test interface
+    display_test.py            # Display test routines
+    config.json                # Configuratie parameters
+    README.md                  # Module-specifieke documentatie
+    __init__.py                # Python package definitie
+lvgl-micropython-firmware/    # LVGL MicroPython firmware builds
+  make.sh                     # Build script voor firmware
+  image/                      # Firmware images
 web-dashboard/
   watertank_module/
-    watertank_module_webble.html  # Pure CSS WebBLE
+    watertank_module_webble.html  # Pure CSS WebBLE dashboard
+    app.js                         # Dashboard JavaScript logica
+    styles.css                     # Dashboard styling
+    README.md                      # Dashboard documentatie
 docs/
-  system-overview.svg
-  quickstart-flow.svg
-  system-architecture.md
-  domobar-specs.md
-  calibration-guide.md
-  configuration-reference.md
-LICENSE
-README.md
+  system-overview.svg              # Systeem architectuur diagram
+  quickstart-flow.svg              # Quick start stroomdiagram
+  system-architecture.md           # Hardware/software architectuur
+  domobar-specs.md                 # Technische specificaties
+  calibration-guide.md             # Kalibratie handleiding
+  configuration-reference.md       # Configuratie parameter referentie
+  README.md                        # Documentatie overzicht
+LICENSE                           # MIT licentie
+README.md                         # Project overzicht
 ```
 
 ## Quick Start
 ![Quick Start](docs/quickstart-flow.svg)
 
-1. **Flash** MicroPython 1.25 op ESP32-WROOM-32E.
-2. **Upload** `firmware/watertank_module/main.py` en optioneel `config.json`.
+1. **Flash** MicroPython 1.25 op ESP32-S3.
+2. **Upload** `firmware/watertank_module/` bestanden en optioneel `config.json`.
 3. **Koppel** DYP-A02YY (UART) + interlock-relais (energize-to-run, active-LOW).
 4. **Start** en **verbind** via het WebBLE-dashboard (`web-dashboard/watertank_module/watertank_module_webble.html`).
 5. **Calibreer**: `CAL FULL` → tank vol; `CAL EMPTY` → minimaal niveau; check `CFG?`.
@@ -48,12 +64,15 @@ README.md
 - MCU-fout of reboot ⇒ standaard **safe-off**.
 - Heater uit bij **LOW**; **alles uit** bij **BOTTOM**.
 
-## WaterTank Module (ESP32-WROOM-32E, MicroPython 1.25)
-- Sensor: **DYP-A02YY (UART)**, ~100 ms respons, blind zone ~30 mm.
-- Filtering: median window + EMA (`window=5`, `ema_alpha=0.25`).
-- Drempels: `low_pct=30`, `bottom_pct=10`, `hysteresis_pct=4`.
-- Sample: `sample_hz=8`, timeout `1200 ms`.
-- Kalibratie: `CAL FULL`/`CAL EMPTY` (waarden persist in `config.json`).
+## WaterTank Module (ESP32-S3, MicroPython 1.25)
+- **Hardware**: ESP32-S3 microcontroller met geïntegreerde WiFi/BLE
+- **Sensor**: **DYP-A02YY (UART)**, ~100 ms respons, blind zone ~30 mm
+- **Filtering**: Median window + EMA (`window=5`, `ema_alpha=0.25`)
+- **Drempels**: `low_pct=30`, `bottom_pct=10`, `hysteresis_pct=4`
+- **Sampling**: `sample_hz=8`, timeout `1200 ms`
+- **Kalibratie**: `CAL FULL`/`CAL EMPTY` (waarden persist in `config.json`)
+- **Interfaces**: UART sensor, I2C display, GPIO interlocks, BLE dashboard
+- **Veiligheid**: Fail-safe interlocks, active-LOW logica, energize-to-run
 
 ## Dashboards (Watertank_Module)
 - **WebBLE** dashboard met:
@@ -71,6 +90,9 @@ MIT — zie `LICENSE`.
 
 ---
 
-### Changelog (korte noot)
-- Domobar-specifieke defaults in firmware (`min_mm=30`, `max_mm=220`, `low/bottom/hysteresis`, etc.).
-- Dashboard: pure CSS; inline auto-calibratiepaneel toegevoegd.
+### Changelog
+- **v1.0**: Basis watertank module met ESP32-S3 en DYP-A02YY sensor
+- **v1.1**: WebBLE dashboard toegevoegd met real-time monitoring
+- **v1.2**: Uitgebreide configuratie mogelijkheden en kalibratie tools
+- **v1.3**: Verbeterde documentatie en configuratie referentie toegevoegd
+- **Huidig**: Domobar-specifieke defaults, fail-safe interlocks, pure CSS dashboard
