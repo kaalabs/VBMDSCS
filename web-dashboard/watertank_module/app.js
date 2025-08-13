@@ -77,6 +77,14 @@
     ui.connBadge.textContent = state;
     ui.connBadge.className = 'badge ' + (state === 'connected' ? 'b-green' : 'b-gray');
     updateConnButtons(state === 'connected');
+    // Reset UI indicators when not connected
+    if (state !== 'connected') {
+      lastState = null; lastPct = null; lastReady = null;
+      setStateBadge('—');
+      setReadyBadge(null);
+      updateGauge(null);
+      try { ui.cfgDump.textContent = '—'; } catch(e) {}
+    }
   }
 
   function updateConnButtons(isConnected){
