@@ -49,6 +49,9 @@
   let preferTestStream = false;    // When true, ignore non-test state/pct for UI
   let lastTestMsgTs = 0;           // ms timestamp of last test message
   const TEST_INACTIVE_DEBOUNCE_MS = 1500;
+  // Sequence tracking to drop out-of-order frames
+  let lastSeqStatus = -1;
+  let lastSeqTest = -1;
 
   function now() { return new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
   function log(line, kind) {
@@ -268,6 +271,21 @@
         const o = JSON.parse(js);
         log(`[BLE] Raw message received: ${js}`, 'warn');
         const isTestEvent = (o.evt === 'test');
+        // Optional latency logging
+        if ('ts_ms' in o) {
+          try { const lag = Date.now() - Number(o.ts_ms); if (!isNaN(lag)) log(`[BLE] latency ${lag}ms`); } catch {}
+        }
+        // Drop out-of-order messages based on seq when present
+        if ('seq' in o) {
+          const s = Number(o.seq);
+          if (isTestEvent) {
+            if (lastSeqTest >= 0 && s < lastSeqTest) { log('Ignoring out-of-order TEST seq ' + s + ' < ' + lastSeqTest, 'warn'); continue; }
+            lastSeqTest = s;
+          } else {
+            if (lastSeqStatus >= 0 && s < lastSeqStatus) { log('Ignoring out-of-order STATUS seq ' + s + ' < ' + lastSeqStatus, 'warn'); continue; }
+            lastSeqStatus = s;
+          }
+        }
         // During test, only apply state/pct from test stream to avoid mixed sources
         const allowStatusApply = !preferTestStream || isTestEvent;
         if ('state' in o && allowStatusApply) {
