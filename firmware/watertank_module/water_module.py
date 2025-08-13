@@ -114,6 +114,13 @@ class WaterModule:
         self._last_status_ms = 0
         self._last_sys_err_ms = 0
         self.test_pct = None
+        self.seq = 0
+        self.ema_level = None
+        self._uart_buf = b""
+        # State hysteresis/debounce
+        self._pending_state = self.current_state
+        self._pending_since_ms = self._now_ms()
+        self._last_committed_state = self.current_state
         
     def _init_pins(self):
         try:
@@ -158,26 +165,38 @@ class WaterModule:
             log("info", "System ready")
     
     def _update_level_state(self):
-        if self.cfg["cal_full_mm"] and self.cfg["cal_empty_mm"]:
+        # Apply EMA to current_level when valid
+        if self.sensor_valid:
+            alpha = float(self.cfg.get("ema_alpha", 0.25))
+            if self.ema_level is None:
+                self.ema_level = self.current_level
+            else:
+                self.ema_level = alpha * self.current_level + (1.0 - alpha) * self.ema_level
+        level_for_state = self.ema_level if (self.sensor_valid and self.ema_level is not None) else self.current_level
+        if self.cfg["cal_full_mm"] and self.cfg["cal_empty_mm"] and level_for_state is not None:
             full_mm = self.cfg["cal_full_mm"]
             empty_mm = self.cfg["cal_empty_mm"]
             if full_mm < empty_mm:
-                pct = max(0, min(100, (empty_mm - self.current_level) / (empty_mm - full_mm) * 100))
+                pct = max(0, min(100, (empty_mm - level_for_state) / (empty_mm - full_mm) * 100))
             else:
-                pct = max(0, min(100, (self.current_level - empty_mm) / (full_mm - empty_mm) * 100))
+                pct = max(0, min(100, (level_for_state - empty_mm) / (full_mm - empty_mm) * 100))
         else:
             pct = 50.0
         
-        old_state = self.current_state
-        if pct <= self.cfg["bottom_pct"]:
-            self.current_state = STATE_BOTTOM
-        elif pct <= self.cfg["low_pct"]:
-            self.current_state = STATE_LOW
-        else:
-            self.current_state = STATE_OK
-        
-        if old_state != self.current_state:
+        # Hysteresis and debounce
+        hyst = float(self.cfg.get("hysteresis_pct", 4))
+        desired = self._decide_state_with_hysteresis(pct, hyst)
+        now_ms = self._now_ms()
+        if desired != self._pending_state:
+            self._pending_state = desired
+            self._pending_since_ms = now_ms
+        debounce_ms = 400
+        if self._diff_ms(now_ms, self._pending_since_ms) >= debounce_ms and desired != self.current_state:
+            old_state = self.current_state
+            self.current_state = desired
+            self._last_committed_state = desired
             log("info", f"State changed: {old_state} -> {self.current_state} (pct: {pct:.1f}%)")
+            self._apply_fail_safe_outputs()
         
         return pct
     
@@ -197,20 +216,71 @@ class WaterModule:
         else:
             pct = 50.0
         
-        old_state = self.current_state
-        if not self.sensor_valid and not self.test_active:
-            self.current_state = STATE_FAULT
-        elif pct <= self.cfg["bottom_pct"]:
-            self.current_state = STATE_BOTTOM
-        elif pct <= self.cfg["low_pct"]:
-            self.current_state = STATE_LOW
-        else:
-            self.current_state = STATE_OK
-        
-        if old_state != self.current_state:
+        # Apply hysteresis/ debounce using computed pct
+        hyst = float(self.cfg.get("hysteresis_pct", 4))
+        desired = self._decide_state_with_hysteresis(pct, hyst)
+        now_ms = self._now_ms()
+        if desired != self._pending_state:
+            self._pending_state = desired
+            self._pending_since_ms = now_ms
+        debounce_ms = 400
+        if self._diff_ms(now_ms, self._pending_since_ms) >= debounce_ms and desired != self.current_state:
+            old_state = self.current_state
+            self.current_state = desired
+            self._last_committed_state = desired
             log("info", f"State changed: {old_state} -> {self.current_state} (pct: {pct:.1f}%, sensor_valid: {self.sensor_valid})")
+            self._apply_fail_safe_outputs()
         
         return pct
+
+    def _decide_state_with_hysteresis(self, pct, hyst):
+        if not self.sensor_valid and not self.test_active:
+            return STATE_FAULT
+        low = float(self.cfg.get("low_pct", 30))
+        bottom = float(self.cfg.get("bottom_pct", 10))
+        st = self.current_state
+        # Compute entry/exit thresholds
+        to_bottom = pct <= (bottom - hyst)
+        to_low = pct <= (low - hyst)
+        to_ok = pct >= (low + hyst)
+        if st == STATE_BOTTOM:
+            return STATE_BOTTOM if pct <= (bottom + hyst) else (STATE_LOW if pct <= (low - hyst) else STATE_OK)
+        if st == STATE_LOW:
+            if to_bottom:
+                return STATE_BOTTOM
+            return STATE_LOW if pct <= (low + hyst) else STATE_OK
+        if st == STATE_OK:
+            if to_bottom:
+                return STATE_BOTTOM
+            return STATE_LOW if to_low else STATE_OK
+        return STATE_OK
+
+    def _apply_fail_safe_outputs(self):
+        try:
+            interlock_active = bool(self.cfg.get("interlock_active", True))
+            allow_pump_at_low = bool(self.cfg.get("allow_pump_at_low", True))
+            # Determine safe/ok
+            ok_for_pump = self.sensor_valid and (self.current_state == STATE_OK or (self.current_state == STATE_LOW and allow_pump_at_low))
+            ok_for_heater = self.sensor_valid and (self.current_state == STATE_OK)
+            # Safe is value 1, ok is value 0
+            if self.cfg.get("pump_ok_pin") is not None and bool(self.cfg.get("use_pump_ok", True)):
+                try:
+                    Pin(self.cfg["pump_ok_pin"], Pin.OUT).value(0 if ok_for_pump else 1)
+                except Exception:
+                    pass
+            if self.cfg.get("heater_ok_pin") is not None and bool(self.cfg.get("use_heater_ok", True)):
+                try:
+                    Pin(self.cfg["heater_ok_pin"], Pin.OUT).value(0 if ok_for_heater else 1)
+                except Exception:
+                    pass
+            if interlock_active:
+                try:
+                    # If not ok_for_pump, assert interlock safe
+                    Pin(self.cfg["interlock_pin"], Pin.OUT).value(1 if not ok_for_pump else 0)
+                except Exception:
+                    pass
+        except Exception as e:
+            log("warn", f"Fail-safe apply error: {e}")
     
     def _generate_test_data(self, force_send=False):
         if not self.test_data_active:
@@ -250,6 +320,8 @@ class WaterModule:
         # Send test data via BLE - use same format as _send_status for consistency
         if self.ble and (force_send or (self._diff_ms(now_ms, self._last_test_ble_ms) >= 1000)):
             test_data = {
+                "seq": self.seq,
+                "ts_ms": int(self._now_ms()),
                 # Core status fields (same as _send_status)
                 "state": self.current_state,
                 "pct": self.test_pct,
@@ -279,6 +351,7 @@ class WaterModule:
                     self.ble.notify_priority(payload)
                 else:
                     self.ble.notify(payload)
+                self.seq = (self.seq + 1) & 0xFFFFFFFF
                 log("info", f"Test data sent via BLE")
                 self._last_test_ble_ms = now_ms
             except Exception as e:
@@ -290,25 +363,37 @@ class WaterModule:
     def _read_sensor(self):
         try:
             if self.uart and self.uart.any():
-                data = self.uart.read()
-                if data:
-                    # Parse sensor data (simplified for now)
-                    # In real implementation, parse DYP-A02YY data format
-                    try:
-                        # Simulate more realistic sensor reading
-                        # Use a combination of time and some variation to simulate real sensor
-                        base_level = 100.0  # Base level around middle of range
-                        variation = (time.time() % 30) * 2 - 30  # ±30mm variation over 30 seconds
-                        noise = (time.time() % 5) * 0.5  # Small noise component
-                        self.current_level = max(self.cfg["min_mm"], 
-                                              min(self.cfg["max_mm"], 
-                                                  base_level + variation + noise))
-                        self.last_sensor_time = time.time()
-                        self.sensor_valid = True
-                        log("info", f"UART data received: {data}, simulated level: {self.current_level:.1f}mm")
-                    except Exception as e:
-                        log("error", f"Failed to parse sensor data: {e}")
-                        self.sensor_valid = False
+                chunk = self.uart.read()
+                if chunk:
+                    self._uart_buf += chunk
+                    # Try to split by newline and parse numeric mm value from line
+                    while b"\n" in self._uart_buf:
+                        line, _, rest = self._uart_buf.partition(b"\n")
+                        self._uart_buf = rest
+                        try:
+                            txt = line.decode(errors='ignore').strip()
+                            # extract first float in line
+                            val = None
+                            num = ""
+                            for ch in txt:
+                                if (ch.isdigit() or ch in ['.', '-']):
+                                    num += ch
+                                elif num:
+                                    break
+                            if num:
+                                val = float(num)
+                            if val is not None:
+                                # Sanity check range
+                                if self.cfg["min_mm"] <= val <= self.cfg["max_mm"]:
+                                    self.current_level = val
+                                    self.last_sensor_time = time.time()
+                                    self.sensor_valid = True
+                                else:
+                                    self.sensor_valid = False
+                                    self._emit_sys_event_throttled("sensor out of range", err="range")
+                        except Exception as e:
+                            self.sensor_valid = False
+                            self._emit_sys_event_throttled("sensor parse error", err="parse")
             else:
                 # No data available; check timeout to flag sensor fault
                 try:
@@ -322,21 +407,26 @@ class WaterModule:
                         log("warn", "Sensor timeout - marking sensor_invalid")
                     self.sensor_valid = False
                     # Emit a throttled sys event so the dashboard can show a hint
-                    now_ms = self._now_ms()
-                    if self.ble and self._diff_ms(now_ms, self._last_sys_err_ms) >= 2000:
-                        try:
-                            self.ble.notify(json.dumps({
-                                "evt": "sys",
-                                "msg": "sensor timeout",
-                                "err": "no_data",
-                                "sensor_valid": False
-                            }))
-                        except Exception:
-                            pass
-                        self._last_sys_err_ms = now_ms
+                    self._emit_sys_event_throttled("sensor timeout", err="no_data")
         except Exception as e:
             log("error", f"UART read failed: {e}")
             self.sensor_valid = False
+
+    def _emit_sys_event_throttled(self, msg, err=None):
+        try:
+            now_ms = self._now_ms()
+            if self.ble and self._diff_ms(now_ms, self._last_sys_err_ms) >= 2000:
+                payload = {"evt": "sys", "msg": msg}
+                if err:
+                    payload["err"] = err
+                payload["sensor_valid"] = self.sensor_valid
+                try:
+                    self.ble.notify(json.dumps(payload))
+                except Exception:
+                    pass
+                self._last_sys_err_ms = now_ms
+        except Exception:
+            pass
     
     def _send_status(self):
         if not self.ble:
@@ -363,6 +453,8 @@ class WaterModule:
             log("info", f"[TRACE] Calculated pct={pct}, final state={self.current_state}")
             
             status_data = {
+                "seq": self.seq,
+                "ts_ms": int(self._now_ms()),
                 "state": self.current_state,
                 "pct": pct,
                 "ready": self.ready,
@@ -380,6 +472,7 @@ class WaterModule:
                 "DEBUG_test_data_active": self.test_data_active
             }
             self.ble.notify(json.dumps(status_data))
+            self.seq = (self.seq + 1) & 0xFFFFFFFF
             log("info", f"[TRACE] Status SENT: {status_data}")
         except Exception as e:
             log("error", f"Failed to send status: {e}")
