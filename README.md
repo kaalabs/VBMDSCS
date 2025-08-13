@@ -56,7 +56,9 @@ README.md                         # Project overzicht
 2. **Upload** `firmware/watertank_module/` bestanden en optioneel `config.json`.
 3. **Koppel** DYP-A02YY (UART) + interlock-relais (energize-to-run, active-LOW).
 4. **Start** en **verbind** via het WebBLE-dashboard (`web-dashboard/watertank_module/watertank_module_webble.html`).
-5. **Calibreer**: `CAL FULL` → tank vol; `CAL EMPTY` → minimaal niveau; check `CFG?`.
+5. **Calibreer**: 
+   - **Handmatig**: `CAL FULL` → tank vol; `CAL EMPTY` → minimaal niveau; check `CFG?`.
+   - **Auto-calibratie**: Schakel onderhoudsmodus in → klik Auto-calibratie → volg de wizard.
 6. **Configuratie**: Alle parameters instelbaar via `config.json`; zie `docs/configuration-reference.md` voor volledige referentie.
 
 ## Veiligheid
@@ -77,9 +79,12 @@ README.md                         # Project overzicht
 ## Dashboards (Watertank_Module)
 - **WebBLE** dashboard met:
   - Live `%` + status (OK/LOW/BOTTOM/FAULT) en kleurindicatie.
-  - Inline **auto-calibratie** stappenpaneel (FULL → EMPTY).
+  - **Onderhoudsmodus** voor geavanceerde functies.
+  - **Auto-calibratie wizard** met stapsgewijze begeleiding (FULL → EMPTY).
+  - **Test modus** voor validatie en debugging.
   - Eventlog en `CFG?/INFO?` dump.
 - Open in **HTTPS** context (of `http://localhost`).
+- **Auto-calibratie** is beschikbaar via de onderhoudsmodus checkbox.
 
 ## Media / Demo
 - **GIF/Video** plaats hier later: `docs/demo-calibration.gif` (placeholder).
@@ -95,4 +100,5 @@ MIT — zie `LICENSE`.
 - **v1.1**: WebBLE dashboard toegevoegd met real-time monitoring
 - **v1.2**: Uitgebreide configuratie mogelijkheden en kalibratie tools
 - **v1.3**: Verbeterde documentatie en configuratie referentie toegevoegd
-- **Huidig**: Domobar-specifieke defaults, fail-safe interlocks, pure CSS dashboard
+- **v1.4**: Auto-calibratie wizard toegevoegd via onderhoudsmodus
+- **Huidig**: Domobar-specifieke defaults, fail-safe interlocks, pure CSS dashboard, auto-calibratie wizard

@@ -5,7 +5,7 @@ De belangrijkste bestanden zijn:
 
 - `system-architecture.md` – beschrijft de hardware- en softwarearchitectuur.
 - `domobar-specs.md` – technische specificaties van de Vibiemme Domobar.
-- `calibration-guide.md` – stap-voor-stap kalibratie van de watertankmodule.
+- `calibration-guide.md` – stap-voor-stap kalibratie van de watertankmodule (handmatig en auto-calibratie).
 - `configuration-reference.md` – uitgebreide referentie van alle configuratie parameters.
 - `system-overview.svg` – visuele weergave van de modules in het systeem.
 - `quickstart-flow.svg` – stroomdiagram om snel aan de slag te gaan.

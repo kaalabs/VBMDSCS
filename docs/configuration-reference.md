@@ -204,7 +204,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Type**: Boolean
 - **Default**: True
 - **Beschrijving**: Automatisch bijhouden van waargenomen min/max waarden.
-- **Gebruik**: Als True, leert het systeem automatisch van waargenomen extremen als backstop voor ontbrekende kalibratie.
+- **Gebruik**: Als True, leert het systeem automatisch van waargenomen extremen als backstop voor ontbrekende kalibratie. Werkt samen met de auto-calibratie functie in het dashboard.
 - **Meer info**: [Machine Learning Basics](https://en.wikipedia.org/wiki/Machine_learning)
 
 ### `cal_empty_mm`
@@ -269,6 +269,26 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Gebruik**: Langere periodes geven meer tijd om test resultaten te observeren.
 - **Meer info**: [Synthetic Data Generation](https://en.wikipedia.org/wiki/Synthetic_data), [Test Automation](https://en.wikipedia.org/wiki/Test_automation)
 
+## Dashboard Functionaliteiten
+
+### Onderhoudsmodus
+- **Activeren**: Schakel de "Onderhoudsmodus" checkbox in
+- **Extra functies**: Toegang tot geavanceerde configuratie en test opties
+- **Auto-calibratie**: Stapsgewijze kalibratie wizard voor nieuwe installaties
+- **Test modus**: Start/stop test cycli en monitoring
+
+### Auto-Calibratie Wizard
+- **Stap-voor-stap begeleiding** door het kalibratie proces
+- **Visuele feedback** met status indicatoren
+- **Automatische opslag** van kalibratie waarden
+- **Navigatie controle** met terug/annuleren opties
+
+### Real-time Monitoring
+- **Live waterniveau** met percentage en status
+- **Status badges** (OK/LOW/BOTTOM/FAULT) met kleurcodering
+- **Event log** met timestamp en bericht type
+- **Configuratie dump** van alle huidige instellingen
+
 ## Configuratie Wijzigen
 
 ### Via Dashboard
@@ -276,6 +296,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 2. Gebruik CFG? om huidige configuratie te bekijken
 3. Gebruik CFG RESET om terug te gaan naar defaults
 4. Gebruik CFG commando's om specifieke waarden te wijzigen
+5. **Gebruik Auto-Calibratie** voor stapsgewijze kalibratie (onderhoudsmodus)
 
 ### Via Bestand
 1. Upload een aangepaste `config.json` naar het apparaat
