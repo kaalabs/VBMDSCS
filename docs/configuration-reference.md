@@ -48,7 +48,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Bereik**: 9600, 19200, 38400, 57600, 115200
 - **Beschrijving**: Baudrate voor UART communicatie met de sensor.
 - **Gebruik**: Moet overeenkomen met de DYP-A02YY sensor instellingen.
-- **Meer info**: [UART Baud Rate Standards](https://en.wikipedia.org/wiki/Baud), [DYP-A02YY Datasheet](https://www.dfrobot.com/wiki/index.php/Waterproof_Ultrasonic_Sensor_Module_SKU:SEN0207), [Serial Communication Basics](https://www.sparkfun.com/tutorials/215)
+- **Meer info**: [UART Baud Rate Standards](https://en.wikipedia.org/wiki/Baud), [DYP-A02YY Datasheet](https://www.dfrobot.com/wiki/index.php/Waterproof_Ultrasonic_Sensor_Module_SKU:SEN0207)
 
 ## Sampling & Filtering
 
@@ -74,7 +74,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Bereik**: 0.0-1.0
 - **Beschrijving**: Exponential Moving Average smoothing factor.
 - **Gebruik**: Hogere waarden (dichter bij 1.0) maken het systeem responsiever maar gevoeliger voor ruis. 0.25 biedt goede stabiliteit met acceptabele respons.
-- **Meer info**: [Exponential Moving Average](https://en.wikipedia.org/wiki/Moving_average#Exponential_moving_average), [EMA vs SMA Comparison](https://www.investopedia.com/ask/answers/122314/what-exponential-moving-average-ema-formula-and-how-ema-calculated.asp), [Signal Smoothing Techniques](https://www.mathworks.com/help/signal/ug/smoothing-data.html)
+- **Meer info**: [Exponential Moving Average](https://en.wikipedia.org/wiki/Moving_average#Exponential_moving_average), [EMA vs SMA Comparison](https://www.investopedia.com/ask/answers/122314/what-exponential-moving-average-ema-formula-and-how-ema-calculated.asp)
 
 ## Tank Geometrie & Plausibiliteit
 
@@ -109,7 +109,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Bereik**: 5-20
 - **Beschrijving**: Percentage drempel voor "leeg" niveau.
 - **Gebruik**: Onder deze drempel worden alle interlocks geactiveerd en wordt de machine veilig gestopt.
-- **Meer info**: [Threshold Detection](https://en.wikipedia.org/wiki/Threshold_detector), [Level Control Systems](https://www.controleng.com/articles/level-control-basics/), [Safety Thresholds](https://www.iso.org/standard/45001.html)
+- **Meer info**: [Threshold Detection](https://en.wikipedia.org/wiki/Threshold_detector), [Safety Thresholds](https://www.iso.org/standard/45001.html)
 
 ### `low_pct`
 - **Type**: Integer
@@ -117,7 +117,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Bereik**: 15-50
 - **Beschrijving**: Percentage drempel voor "laag" niveau.
 - **Gebruik**: Onder deze drempel wordt de verwarming uitgeschakeld om oververhitting te voorkomen.
-- **Meer info**: [Multi-Level Thresholds](https://en.wikipedia.org/wiki/Threshold_model), [Thermal Protection](https://www.omega.com/en-us/control-and-monitoring-devices/process-control-and-monitoring/process-controllers), [Boiler Safety Systems](https://www.boiler.org/boiler-safety/)
+- **Meer info**: [Multi-Level Thresholds](https://en.wikipedia.org/wiki/Threshold_model), [Thermal Protection](https://www.omega.com/en-us/control-and-monitoring-devices/process-control-and-monitoring/process-controllers)
 
 ### `hysteresis_pct`
 - **Type**: Integer
@@ -125,7 +125,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Bereik**: 2-10
 - **Beschrijving**: Hysteresis band in percentage om snelle toggling te voorkomen.
 - **Gebruik**: Voorkomt dat de status constant wisselt rond de drempelwaarden. 4% is een goede balans tussen stabiliteit en responsiviteit.
-- **Meer info**: [Hysteresis in Control Systems](https://en.wikipedia.org/wiki/Hysteresis#Control_systems), [Schmitt Trigger Principle](https://en.wikipedia.org/wiki/Schmitt_trigger), [Debouncing Techniques](https://www.arduino.cc/en/Tutorial/Debounce), [Stable Control Design](https://www.mathworks.com/help/control/ug/control-system-design.html)
+- **Meer info**: [Hysteresis in Control Systems](https://en.wikipedia.org/wiki/Hysteresis#Control_systems), [Schmitt Trigger Principle](https://en.wikipedia.org/wiki/Schmitt_trigger), [Debouncing Techniques](https://www.arduino.cc/en/Tutorial/Debounce)
 
 ## Interlock Configuratie
 
@@ -142,7 +142,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Bereik**: 0-48 (ESP32-S3 GPIO)
 - **Beschrijving**: GPIO die alle belastingen afsluit (master interlock).
 - **Gebruik**: Active-LOW logica: 0 = toestaan, 1 = veilig (stoppen).
-- **Meer info**: [Active-LOW Logic](https://en.wikipedia.org/wiki/Logic_level#Active-low_signals), [Relay Control Circuits](https://www.electronics-tutorials.ws/io/io_6.html), [ESP32 GPIO Control](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/gpio.html)
+- **Meer info**: [Active-LOW Logic](https://en.wikipedia.org/wiki/Logic_level#Active-low_signals), [ESP32 GPIO Control](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/gpio.html)
 
 ### `pump_ok_pin`
 - **Type**: Integer
@@ -150,7 +150,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Bereik**: 0-48 (ESP32-S3 GPIO)
 - **Beschrijving**: GPIO die de pomp toestaat.
 - **Gebruik**: Active-LOW logica: 0 = pomp aan, 1 = pomp uit.
-- **Meer info**: [Pump Control Systems](https://www.pumpsandsystems.com/pump-control), [Relay Module Wiring](https://randomnerdtutorials.com/guide-for-relay-module-with-arduino/), [ESP32 Relay Control](https://randomnerdtutorials.com/esp32-relay-module-ac-web-server/)
+- **Meer info**: [Relay Module Wiring](https://randomnerdtutorials.com/guide-for-relay-module-with-arduino/), [ESP32 Relay Control](https://randomnerdtutorials.com/esp32-relay-module-ac-web-server/)
 
 ### `heater_ok_pin`
 - **Type**: Integer
@@ -158,7 +158,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Bereik**: 0-48 (ESP32-S3 GPIO)
 - **Beschrijving**: GPIO die de verwarming toestaat.
 - **Gebruik**: Active-LOW logica: 0 = verwarming aan, 1 = verwarming uit.
-- **Meer info**: [Heater Control Systems](https://www.omega.com/en-us/control-and-monitoring-devices/process-control-and-monitoring/process-controllers), [Thermal Management](https://www.ti.com/lit/an/slva462a/slva462a.pdf), [ESP32 Temperature Control](https://randomnerdtutorials.com/esp32-ds18b20-temperature-sensor-web-server/)
+- **Meer info**: [Heater Control Systems](https://www.omega.com/en-us/control-and-monitoring-devices/process-control-and-monitoring/process-controllers), [Thermal Management](https://www.ti.com/lit/an/slva462a/slva462a.pdf)
 
 ### `use_pump_ok`
 - **Type**: Boolean
@@ -188,7 +188,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Default**: True
 - **Beschrijving**: Nordic UART-achtige BLE service in- of uitschakelen.
 - **Gebruik**: Vereist voor WebBLE dashboard communicatie. Kan worden uitgeschakeld om stroom te besparen.
-- **Meer info**: [Nordic UART Service](https://infocenter.nordicsemi.com/topic/struct_sdk/struct/sdk_nrf5_latest.html?cp=8_1_4_2_1_1), [Web Bluetooth API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Bluetooth_API), [ESP32 BLE Tutorial](https://randomnerdtutorials.com/esp32-bluetooth-low-energy-ble-arduino-ide/)
+- **Meer info**: [Web Bluetooth API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Bluetooth_API), [ESP32 BLE Tutorial](https://randomnerdtutorials.com/esp32-bluetooth-low-energy-ble-arduino-ide/)
 
 ### `ble_name`
 - **Type**: String
@@ -196,7 +196,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Bereik**: 1-20 karakters
 - **Beschrijving**: BLE GAP/advertising apparaat naam.
 - **Gebruik**: Deze naam verschijnt in de Bluetooth instellingen van je apparaat.
-- **Meer info**: [BLE GAP Advertising](https://www.bluetooth.com/specifications/specs/generic-access-profile-1-1/), [ESP32 BLE Device Name](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/bluetooth/esp_gap_ble.html)
+- **Meer info**: [ESP32 BLE Device Name](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/bluetooth/esp_gap_ble.html)
 
 ## Kalibratie Parameters
 
@@ -205,7 +205,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Default**: True
 - **Beschrijving**: Automatisch bijhouden van waargenomen min/max waarden.
 - **Gebruik**: Als True, leert het systeem automatisch van waargenomen extremen als backstop voor ontbrekende kalibratie.
-- **Meer info**: [Machine Learning Basics](https://en.wikipedia.org/wiki/Machine_learning), [Adaptive Calibration](https://www.sciencedirect.com/science/article/abs/pii/S0005109818301234), [Sensor Auto-Calibration](https://ieeexplore.ieee.org/document/1234567)
+- **Meer info**: [Machine Learning Basics](https://en.wikipedia.org/wiki/Machine_learning)
 
 ### `cal_empty_mm`
 - **Type**: Float
@@ -221,7 +221,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Bereik**: 20-150
 - **Bereik**: Initiële FULL kalibratie anker in millimeters.
 - **Gebruik**: Startwaarde voor kalibratie. Wordt overschreven door CAL FULL commando.
-- **Meer info**: [Two-Point Calibration](https://en.wikipedia.org/wiki/Calibration_curve), [Linear Interpolation](https://www.mathworks.com/help/matlab/ref/interp1.html), [Sensor Calibration Methods](https://www.analog.com/en/analog-dialogue/articles/sensor-calibration-methods.html)
+- **Meer info**: [Two-Point Calibration](https://en.wikipedia.org/wiki/Calibration_curve), [Linear Interpolation](https://www.mathworks.com/help/matlab/ref/interp1.html)
 
 ## Gedrag Opties
 
@@ -267,7 +267,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 - **Bereik**: 10-60
 - **Beschrijving**: Periode in seconden voor één volledige synthetische sweep in TEST modus.
 - **Gebruik**: Langere periodes geven meer tijd om test resultaten te observeren.
-- **Meer info**: [Test Signal Generation](https://en.wikipedia.org/wiki/Test_signal), [Synthetic Data Generation](https://en.wikipedia.org/wiki/Synthetic_data), [System Validation](https://www.mathworks.com/help/simulink/ug/system-validation.html), [Test Automation](https://en.wikipedia.org/wiki/Test_automation)
+- **Meer info**: [Synthetic Data Generation](https://en.wikipedia.org/wiki/Synthetic_data), [Test Automation](https://en.wikipedia.org/wiki/Test_automation)
 
 ## Configuratie Wijzigen
 
@@ -368,8 +368,7 @@ De configuratie is opgedeeld in verschillende categorieën:
 
 ### Bluetooth & Web Technologies
 - **[Web Bluetooth API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Bluetooth_API)**: Browser-gebaseerde BLE communicatie
-- **[Nordic UART Service](https://infocenter.nordicsemi.com/topic/struct_sdk/struct/sdk_nrf5_latest.html)**: Standaard BLE service voor UART
-- **[BLE GAP](https://www.bluetooth.com/specifications/specs/generic-access-profile-1-1/)**: Generic Access Profile specificaties
+- **[ESP32 BLE Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/bluetooth/)**: Officiële ESP32 Bluetooth documentatie
 
 ## Veiligheid
 
