@@ -13,7 +13,7 @@
   "allow_pump_at_low": true,
   "log_level": "info",
   "ble_enabled": true,
-  "ble_name": "VBMDSCSWT",
+  "ble_name": "VBMCSWT",
   "use_pump_ok": false,
   "use_heater_ok": false
 }

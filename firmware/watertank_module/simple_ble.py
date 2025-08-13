@@ -14,7 +14,7 @@ except Exception:
 class SimpleBLE:
     """Minimal Nordic-UART-style BLE status/command service."""
 
-    def __init__(self, name="VBMDSCSWT"):
+    def __init__(self, name="VBMCSWT"):
         self.name = name
         self.ble = bluetooth.BLE()
         self.ble.active(True)
@@ -135,19 +135,25 @@ class SimpleBLE:
                 if micropython and hasattr(micropython, "schedule"):
                     def _run_cmd(_):
                         try:
-                            self.on_command(cmd_txt)
+                            response = self.on_command(cmd_txt)
+                            if response:
+                                self.notify(response)
                         except Exception:
                             pass
                     try:
                         micropython.schedule(_run_cmd, 0)
                     except Exception:
                         try:
-                            self.on_command(cmd_txt)
+                            response = self.on_command(cmd_txt)
+                            if response:
+                                self.notify(response)
                         except Exception:
                             pass
                 else:
                     try:
-                        self.on_command(cmd_txt)
+                        response = self.on_command(cmd_txt)
+                        if response:
+                            self.notify(response)
                     except Exception:
                         pass
 
@@ -158,15 +164,21 @@ class SimpleBLE:
     def notify(self, text):
         if text is None:
             return
+        if not self.connections:
+            return  # No connections, skip notification
+            
         data = text if isinstance(text, bytes) else text.encode()
         chunk_size = 18
+        
         for c in list(self.connections):
             try:
                 for i in range(0, len(data), chunk_size):
                     self.ble.gatts_notify(c, self._tx_val_handle, data[i:i + chunk_size])
-                    try:
-                        time.sleep_ms(5)
-                    except Exception:
-                        pass
+                    time.sleep_ms(5)
             except Exception:
-                pass
+                # Remove invalid connection
+                try:
+                    self.connections.remove(c)
+                except ValueError:
+                    pass
+

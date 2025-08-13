@@ -41,6 +41,7 @@
   let isExpert = false;
   let lastState = null, lastPct = null, lastReady = null;
   let testActive = false;
+  let currentTestId = null;  // Track current test session ID
 
   function now() { return new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
   function log(line, kind) {
@@ -112,6 +113,27 @@
     testActive = !!on;
     if (testActive && !isExpert) ui.testIndicatorRow.classList.remove('hidden');
     else ui.testIndicatorRow.classList.add('hidden');
+    
+    // Force update the UI when test indicator changes
+    if (!testActive) {
+      // Clear any test-related display elements
+      log('Test indicator cleared, performing aggressive reset');
+      
+      // Clear any test-related timers
+      if (testPollTimer) {
+        clearInterval(testPollTimer);
+        testPollTimer = null;
+        log('Test poll timer cleared');
+      }
+      
+      // Force a status refresh by requesting INFO
+      if (rxChar) {
+        setTimeout(() => {
+          sendCmd('INFO?');
+          log('Forced INFO request after test indicator reset');
+        }, 100);
+      }
+    }
   }
 
   function* extractJson(stream){ let d=0,s=-1; for(let i=0;i<stream.length;i++){ const c=stream[i]; if(c==='{' ){ if(d===0) s=i; d++; } else if(c==='}'){ d--; if(d===0 && s!==-1){ yield stream.slice(s,i+1); s=-1; } } } }
@@ -229,8 +251,20 @@
     for (const js of extractJson(buffer)){
       try{
         const o = JSON.parse(js);
-        if ('state' in o) { setStateBadge(o.state); lastState = o.state; }
-        if ('pct' in o) { updateGauge(o.pct); lastPct = o.pct; }
+        log(`[BLE] Raw message received: ${js}`, 'warn');
+        if ('state' in o) { 
+          log(`[DASHBOARD] State update: ${o.state} (was: ${lastState})`, 'warn');
+          if ('DEBUG_test_level' in o) {
+            log(`[DASHBOARD] DEBUG - test_level: ${o.DEBUG_test_level}, current_level: ${o.DEBUG_current_level}, sensor_valid: ${o.DEBUG_sensor_valid}`, 'warn');
+          }
+          setStateBadge(o.state); 
+          lastState = o.state; 
+        }
+        if ('pct' in o) { 
+          log(`[DASHBOARD] Pct update: ${o.pct}% (was: ${lastPct}%)`, 'warn');
+          updateGauge(o.pct); 
+          lastPct = o.pct; 
+        }
         // Extra velden uit firmware tonen
         if ('ready' in o) { setReadyBadge(o.ready); lastReady = o.ready; }
         if ('ema_mm' in o) ui.ema.textContent = (o.ema_mm == null) ? '—' : Number(o.ema_mm).toFixed(1) + ' mm';
@@ -243,7 +277,58 @@
         setUserHint(lastState, lastPct, lastReady);
         // Test events/status
         if (o.evt === 'test') {
-          log('TEST: ' + (o.msg || JSON.stringify(o)), 'warn');
+          // Check if this is from the current test session
+          if ('test_data_id' in o) {
+            if (currentTestId === null || o.test_data_id === currentTestId) {
+              // This is current test data, process it
+              log('TEST: ' + (o.msg || JSON.stringify(o)), 'warn');
+            } else {
+              // This is old test data, ignore it
+              log('Ignoring old test data from session ' + o.test_data_id + ' (current: ' + currentTestId + ')', 'warn');
+              continue;  // Skip processing this message
+            }
+          } else {
+            // No test ID, process normally
+            log('TEST: ' + (o.msg || JSON.stringify(o)), 'warn');
+          }
+        }
+        if (o.evt === 'test_stopped') {
+          log('TEST STOPPED: ' + (o.msg || JSON.stringify(o)), 'warn');
+          
+          // COMPLETE DASHBOARD RESET - Clear all old data
+          log('Performing complete dashboard reset after test stop');
+          
+          // Clear all test-related variables
+          testActive = false;
+          currentTestId = null;  // Reset test session ID
+          if (testPollTimer) {
+            clearInterval(testPollTimer);
+            testPollTimer = null;
+          }
+          
+          // Force update the dashboard with real sensor values
+          if ('current_state' in o) { 
+            setStateBadge(o.current_state); 
+            lastState = o.current_state; 
+          }
+          if ('current_pct' in o) { 
+            updateGauge(o.current_pct); 
+            lastPct = o.current_pct; 
+          }
+          
+          // Update user hint immediately
+          setUserHint(lastState, lastPct, lastReady);
+          
+          // Clear test indicator
+          setTestIndicator(false);
+          
+          // Force clear any lingering test data
+          setTimeout(() => {
+            if (rxChar) {
+              sendCmd('INFO?');
+              log('Forced INFO request after dashboard reset');
+            }
+          }, 200);
         }
         if (o.evt === 'sys') {
           log('SYS: ' + (o.msg || JSON.stringify(o)) + (o.err ? (' err=' + o.err) : ''), 'warn');
@@ -251,6 +336,13 @@
         if ('test_active' in o) {
           const active = !!o.test_active;
           log('TEST active: ' + (active ? 'yes' : 'no'));
+          
+          // Update test ID if provided
+          if ('test_data_id' in o) {
+            currentTestId = o.test_data_id;
+            log('Test session ID: ' + currentTestId);
+          }
+          
           // Start/stop fallback polling tijdens testmodus
           if (active && !testPollTimer) {
             testPollTimer = setInterval(() => { if (rxChar) sendCmd('INFO?'); }, 1000);
@@ -258,6 +350,15 @@
             clearInterval(testPollTimer); testPollTimer = null;
           }
           setTestIndicator(active);
+        }
+        // Check for test_data_active flag
+        if ('test_data_active' in o) {
+          const dataActive = !!o.test_data_active;
+          log('TEST data generation: ' + (dataActive ? 'active' : 'stopped'));
+          if (!dataActive) {
+            // Force clear any test-related display elements
+            log('Test data generation stopped, clearing test display');
+          }
         }
         // Toon expliciet CFG en INFO responses in het paneel (ook als er 'state' in zit)
         const isCfg = ('uart_port' in o) || ('uart_rx' in o) || ('uart_tx' in o)
