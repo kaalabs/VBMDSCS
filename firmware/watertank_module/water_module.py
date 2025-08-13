@@ -112,6 +112,7 @@ class WaterModule:
             self._diff_ms = lambda a, b: a - b
         self._last_test_ble_ms = 0
         self._last_status_ms = 0
+        self._last_sys_err_ms = 0
         self.test_pct = None
         
     def _init_pins(self):
@@ -308,6 +309,31 @@ class WaterModule:
                     except Exception as e:
                         log("error", f"Failed to parse sensor data: {e}")
                         self.sensor_valid = False
+            else:
+                # No data available; check timeout to flag sensor fault
+                try:
+                    timeout_ms = int(self.cfg.get("timeout_ms", 1200))
+                except Exception:
+                    timeout_ms = 1200
+                # If we've never had a reading, use boot-time as reference
+                last_s = self.last_sensor_time or self.boot_time
+                if ((time.time() - last_s) * 1000) >= timeout_ms:
+                    if self.sensor_valid:
+                        log("warn", "Sensor timeout - marking sensor_invalid")
+                    self.sensor_valid = False
+                    # Emit a throttled sys event so the dashboard can show a hint
+                    now_ms = self._now_ms()
+                    if self.ble and self._diff_ms(now_ms, self._last_sys_err_ms) >= 2000:
+                        try:
+                            self.ble.notify(json.dumps({
+                                "evt": "sys",
+                                "msg": "sensor timeout",
+                                "err": "no_data",
+                                "sensor_valid": False
+                            }))
+                        except Exception:
+                            pass
+                        self._last_sys_err_ms = now_ms
         except Exception as e:
             log("error", f"UART read failed: {e}")
             self.sensor_valid = False
