@@ -28,6 +28,7 @@ docs/
   system-architecture.md
   domobar-specs.md
   calibration-guide.md
+  configuration-reference.md
 LICENSE
 README.md
 ```
@@ -40,6 +41,7 @@ README.md
 3. **Koppel** DYP-A02YY (UART) + interlock-relais (energize-to-run, active-LOW).
 4. **Start** en **verbind** via het WebBLE-dashboard (`web-dashboard/watertank_module/watertank_module_webble.html`).
 5. **Calibreer**: `CAL FULL` → tank vol; `CAL EMPTY` → minimaal niveau; check `CFG?`.
+6. **Configuratie**: Alle parameters instelbaar via `config.json`; zie `docs/configuration-reference.md` voor volledige referentie.
 
 ## Veiligheid
 - Interlocks zijn **active-LOW** (0=run, 1=stop) en ontworpen als **energize-to-run (fail-safe)**.
