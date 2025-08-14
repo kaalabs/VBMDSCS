@@ -1,3 +1,11 @@
+"""Eenvoudige BLE-helpers voor status/commando via Nordic UART-profiel.
+
+Compatibiliteit
+---------------
+Ontworpen voor MicroPython varianten met kleine verschillen in GATT API's.
+Minimalistisch gehouden (geen TX-queue) om geheugen en timing te sparen.
+"""
+
 import time
 
 try:
@@ -12,7 +20,7 @@ except Exception:
 
 
 class SimpleBLE:
-    """Minimal Nordic-UART-style BLE status/command service."""
+    """Minimalistische Nordic-UART-achtige status/commandoservice."""
 
     def __init__(self, name="VBMCSWT"):
         self.name = name
@@ -51,7 +59,7 @@ class SimpleBLE:
             self._rx_val_handle = None
         self.connections = set()
 
-        # Simple BLE: no TX queue; notify sends directly with small delay per chunk
+        # Simple BLE: geen TX-queue; notify stuurt direct met korte delay per chunk
         
         # Ensure we start advertising immediately
         self._start_adv()
@@ -65,7 +73,7 @@ class SimpleBLE:
         
 
     def _uuid128_le(self, uuid_str):
-        """Convert UUID string to 128-bit little-endian bytes without slicing step."""
+        """Converteer UUID-string naar 128-bit little-endian bytes zonder slicing."""
         hexs = uuid_str.replace('-', '')
         buf = bytearray()
         for i in range(0, 32, 2):
@@ -76,7 +84,7 @@ class SimpleBLE:
         return bytes(out)
 
     def _adv_payload(self, name=None, services=None):
-        # Build advertising payload within 31 bytes: flags + 128-bit services + shortened name
+        # Bouw advertising payload binnen 31 bytes: flags + 128-bit services + korte naam
         payload = bytearray()
         # Flags: 0x06 = LE General Discoverable + BR/EDR Not Supported
         payload += b"\x02\x01\x06"
@@ -102,7 +110,7 @@ class SimpleBLE:
         return bytes(payload)
 
     def _scan_resp_payload(self, name=None):
-        # Not used for maximum compatibility across ports
+        # Niet gebruikt; laat leeg voor maximale compatibiliteit tussen ports
         return b""
 
     def _start_adv(self):
@@ -164,7 +172,7 @@ class SimpleBLE:
                         pass
 
     def on_command(self, cmd):
-        """Override to handle commands."""
+        """Te overschrijven callback: verwerk een tekstcommando en retourneer optioneel antwoord."""
         pass
 
     def notify(self, text):

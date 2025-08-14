@@ -1,3 +1,14 @@
+"""Entrypoint voor de WaterModule op de ESP32-S3.
+
+Taken
+-----
+- Initialiseert de `WaterModule`
+- Verbindt de BLE-commandohandler
+- Start de hoofdlus
+
+Tip voor lezers: bekijk `water_module.py` voor de kernlogica en BLE-events.
+"""
+
 from machine import Pin
 from water_module import WaterModule, log, DEFAULT_CONFIG
 import time
@@ -6,7 +17,15 @@ import time
 water_module = None
 
 def handle_command(cmd):
-    """Handle incoming commands from BLE."""
+    """Verwerk inkomende BLE-commando's.
+
+    Ondersteunde commando's:
+    - "TEST START": activeert testmodus
+    - "TEST STOP": stopt testmodus
+    - "TEST?": status van testmodus
+    - "INFO?": JSON met actuele status voor het dashboard
+    - "CFG?": JSON met essentiële configuratie
+    """
     global water_module
     if not water_module:
         return "Water module not initialized"
@@ -24,8 +43,8 @@ def handle_command(cmd):
         status = "Test active" if water_module.test_active else "Test inactive"
         return f"Test status: {status}"
     elif cmd == "INFO?":
-        # Return current status info as JSON (dashboard expects JSON)
-        # Use test data if in test mode, otherwise real sensor data
+        # Retourneer statusinformatie als JSON (dashboard verwacht JSON).
+        # Tijdens test: gebruik test-niveau; anders echte sensor.
         if water_module.test_active and water_module.test_level is not None:
             # During test: use test level and state
             pct = water_module._update_level_state_from_level(water_module.test_level)
@@ -47,7 +66,7 @@ def handle_command(cmd):
         }
         return ujson.dumps(info_data)
     elif cmd == "CFG?":
-        # Return essential config as JSON (dashboard expects JSON) 
+        # Retourneer essentiële configuratie als JSON (dashboard verwacht JSON).
         import ujson
         essential_cfg = {
             "min_mm": water_module.cfg.get("min_mm", 0),
@@ -65,6 +84,7 @@ def handle_command(cmd):
         return f"Unknown command: {cmd}"
 
 def main():
+    """Start de module, bind de BLE-handler en ga de hoofdlus in."""
     global water_module
     
     log("info", "Starting WaterModule...")

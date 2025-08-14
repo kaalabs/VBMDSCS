@@ -1,3 +1,10 @@
+"""Signaalbewerking en toestandsbesluit voor watertankniveau.
+
+Deze module bevat een eenvoudige filterpijplijn (median + EMA) en een
+hysterese-gebaseerde toestandsmachine (OK/LOW/BOTTOM/FAULT). De pijplijn is
+geschikt voor lage samplefrequenties en beperkt geheugen.
+"""
+
 STATE_OK = "OK"
 STATE_LOW = "LOW"
 STATE_BOTTOM = "BOTTOM"
@@ -5,10 +12,21 @@ STATE_FAULT = "FAULT"
 
 
 def clamp(x, a, b):
+    """Beperk `x` tot het gesloten interval [a, b]."""
     return a if x < a else (b if x > b else x)
 
 
 class LevelEstimator:
+    """Kleine helperklasse om ruwe mm-metingen te filteren en te mappen naar %.
+
+    Attributen (kern):
+    - `window`: buffer voor medianfilter
+    - `ema`: laatste geëxponentieel gewogen gemiddelde
+    - `obs_min`/`obs_max`: optionele auto-leer ankers
+    - `state`: laatst besloten toestand
+    - `last_pct`: laatst berekende percentage
+    """
+
     def __init__(self, cfg):
         self.cfg = cfg
         self.window = []
@@ -19,11 +37,7 @@ class LevelEstimator:
         self.last_pct = None
 
     def _median(self, arr):
-        """Return median of a small list (copy/sort; n is tiny so OK).
-
-        Using a simple sorted copy keeps the implementation clear and avoids
-        external dependencies. Sensor rate is low, window small.
-        """
+        """Bereken de mediaan van een kleine lijst (copy/sort; n is klein)."""
         a = sorted(arr)
         n = len(a)
         if n == 0:
@@ -32,11 +46,10 @@ class LevelEstimator:
         return a[mid] if n % 2 == 1 else (a[mid - 1] + a[mid]) / 2
 
     def ingest_mm(self, mm):
-        """Push a raw millimeter reading through the filtering pipeline.
+        """Verwerk ruwe mm-invoer door de pijplijn en geef (ema_mm, pct) terug.
 
-        Steps: plausibility gate → median → EMA → percent mapping.
-        When calibration anchors are missing, fall back to observed min/max.
-        Returns a tuple of (ema_mm, pct) or (None, None) if not enough data.
+        Stappen: plausibiliteit → mediaan → EMA → percent mapping.
+        Bij ontbrekende kalibratie-ankers valt de mapping terug op `obs_min/max`.
         """
         if mm is None:
             return None, None
@@ -69,15 +82,7 @@ class LevelEstimator:
         return self.ema, pct
 
     def decide_state(self):
-        """Hysteresis state machine based on the last computed percent.
-
-        States
-        ------
-        - OK: normal operation
-        - LOW: low tank; heater disabled, pump allowed (configurable)
-        - BOTTOM: empty; all interlocks off (safe)
-        - FAULT: no valid reading yet or timeout
-        """
+        """Toestandsmachine met hysterese op basis van `last_pct`."""
         if self.last_pct is None:
             return STATE_FAULT
         low = self.cfg["low_pct"]

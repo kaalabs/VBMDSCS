@@ -1,4 +1,30 @@
-"""WaterTank core module for ESP32-S3 (MicroPython) - Working version."""
+"""WaterTank core module for ESP32-S3 (MicroPython).
+
+Overzicht
+---------
+Deze module beheert de watertanklogica op een ESP32-S3 met MicroPython.
+Belangrijke onderdelen:
+
+- Configuratie en persistentie (`DEFAULT_CONFIG`, `load_config`)
+- Sensorinname via UART (ruwe mm-waarde)
+- Filteren en mapping naar percentage met hysterese voor de toestandsmachine
+- Fail-safe aansturing van interlock/pump/heater via GPIO's
+- BLE-statusupdates en eenvoudige testmodus met gesimuleerde gegevens
+
+Dataflow (vereenvoudigd)
+------------------------
+UART → parse mm → (EMA) → percent → toestandsbesluit (OK/LOW/BOTTOM/FAULT)
+→ outputs toepassen → status via BLE → dashboard.
+
+Testmodus
+---------
+`start_test()` activeert een zaagtandpercentage binnen de gekalibreerde mm-range
+zodat het dashboard en de BLE-keten zonder echte sensor kunnen worden beproefd.
+
+Timing
+------
+De hoofdlus draait op `sample_hz`. Status wordt maximaal 1×/s verzonden om BLE te ontzien.
+"""
 
 import ujson as json
 import machine
@@ -63,14 +89,23 @@ LOG_LEVELS = {"err": 0, "warn": 1, "info": 2}
 _LOG_LEVEL = LOG_LEVELS.get(DEFAULT_CONFIG.get("log_level", "info"), 2)
 
 def set_log_level(level):
+    """Stel het globale logniveau in op "err" | "warn" | "info".
+
+    Onbekende waarden vallen terug op "info".
+    """
     global _LOG_LEVEL
     _LOG_LEVEL = LOG_LEVELS.get(level, 2)
 
 def log(level, msg):
+    """Print een genormeerde logregel indien toegestaan door het ingestelde niveau."""
     if LOG_LEVELS.get(level, 2) <= _LOG_LEVEL:
         print(f"[{level.upper()}] {msg}")
 
 def load_config():
+    """Laad configuratie uit `persist_path` en merge deze met `DEFAULT_CONFIG`.
+
+    Bij fouten wordt er veilig teruggevallen op een kopie van `DEFAULT_CONFIG`.
+    """
     try:
         with open(DEFAULT_CONFIG["persist_path"], "r") as f:
             cfg = json.loads(f.read())
@@ -81,6 +116,15 @@ def load_config():
         return DEFAULT_CONFIG.copy()
 
 class WaterModule:
+    """Hoofdcontroller voor de watertank.
+
+    Verantwoordelijkheden:
+    - Initialisatie van GPIO, UART en BLE
+    - Bijhouden van actuele sensorstatus en afgeleide toestand
+    - Toepassen van fail-safe uitgangsstaten
+    - Verzenden van status en events via BLE
+    - Testmodus genereren en beheren
+    """
     def __init__(self):
         self.cfg = load_config()
         log("info", f"WaterModule initialized with config: {self.cfg}")
@@ -123,6 +167,10 @@ class WaterModule:
         self._last_committed_state = self.current_state
         
     def _init_pins(self):
+        """Initialiseer alle relevante GPIO-pinnen in een veilige uitgangsstaat.
+
+        Let op: waarde 1 is 'safe' voor interlock/pump/heater.
+        """
         try:
             for pin_name in ["interlock_pin", "pump_ok_pin", "heater_ok_pin"]:
                 pin_num = self.cfg[pin_name]
@@ -141,6 +189,10 @@ class WaterModule:
             log("error", f"Pin initialization failed: {e}")
     
     def _init_uart(self):
+        """Maak de UART-verbinding aan voor de afstandssensor.
+
+        Bij falen blijft `self.uart` op `None` en wordt de module in FAULT gehouden.
+        """
         try:
             self.uart = UART(self.cfg["uart_port"], 
                            baudrate=self.cfg["uart_baud"],
@@ -152,6 +204,7 @@ class WaterModule:
             self.uart = None
     
     def _init_ble(self):
+        """Initialiseer de eenvoudige BLE-service en start adverteren."""
         try:
             self.ble = SimpleBLE(self.cfg["ble_name"])
             log("info", f"BLE initialized with name: {self.cfg['ble_name']}")
@@ -160,11 +213,16 @@ class WaterModule:
             self.ble = None
     
     def _check_ready(self):
+        """Zet `ready=True` zodra de boot-grace-periode verstreken is."""
         if not self.ready and (time.time() - self.boot_time) >= self.cfg["boot_grace_s"]:
             self.ready = True
             log("info", "System ready")
     
     def _update_level_state(self):
+        """Werk `ema_level`, `current_state` en fail-safe aansturing bij op basis van sensor.
+
+        Retourneert het berekende percentage t.o.v. de kalibratie.
+        """
         # Apply EMA to current_level when valid
         if self.sensor_valid:
             alpha = float(self.cfg.get("ema_alpha", 0.25))
@@ -201,6 +259,7 @@ class WaterModule:
         return pct
     
     def _update_level_state_from_level(self, level):
+        """Variant van `_update_level_state` voor een expliciet mm-niveau (b.v. testmodus)."""
         # If no valid sensor data, return FAULT state
         if not self.sensor_valid and not self.test_active:
             self.current_state = STATE_FAULT
@@ -234,6 +293,7 @@ class WaterModule:
         return pct
 
     def _decide_state_with_hysteresis(self, pct, hyst):
+        """Toestandsmachine met hysterese rond `low_pct` en `bottom_pct`."""
         if not self.sensor_valid and not self.test_active:
             return STATE_FAULT
         low = float(self.cfg.get("low_pct", 30))
@@ -256,6 +316,10 @@ class WaterModule:
         return STATE_OK
 
     def _apply_fail_safe_outputs(self):
+        """Zet interlock/pump/heater outputs afhankelijk van de toestand.
+
+        Safe = 1; OK = 0. Bij ongeldige sensor of FAULT dwingen we de veilige stand af.
+        """
         try:
             interlock_active = bool(self.cfg.get("interlock_active", True))
             allow_pump_at_low = bool(self.cfg.get("allow_pump_at_low", True))
@@ -283,6 +347,7 @@ class WaterModule:
             log("warn", f"Fail-safe apply error: {e}")
     
     def _generate_test_data(self, force_send=False):
+        """Genereer en publiceer zaagtand-testdata voor het dashboard via BLE."""
         if not self.test_data_active:
             return
         
@@ -361,6 +426,11 @@ class WaterModule:
         log("info", f"Test data: level={self.test_level:.1f}mm, pct={self.test_pct:.1f}%, state={self.current_state}")
     
     def _read_sensor(self):
+        """Lees UART-buffer niet-blokkerend, parse mm-waarde en valideer met grenzen.
+
+        Bij timeouts of parserfouten wordt `sensor_valid=False` gezet en een throttled
+        systeem-event verstuurd voor feedback op het dashboard.
+        """
         try:
             if self.uart and self.uart.any():
                 chunk = self.uart.read()
@@ -413,6 +483,7 @@ class WaterModule:
             self.sensor_valid = False
 
     def _emit_sys_event_throttled(self, msg, err=None):
+        """Stuur een systeembericht via BLE met minimaal 2s interval om spam te voorkomen."""
         try:
             now_ms = self._now_ms()
             if self.ble and self._diff_ms(now_ms, self._last_sys_err_ms) >= 2000:
@@ -429,6 +500,7 @@ class WaterModule:
             pass
     
     def _send_status(self):
+        """Verzend een geconsolideerde statuspayload via BLE (max 1×/s)."""
         if not self.ble:
             return
         
@@ -478,6 +550,7 @@ class WaterModule:
             log("error", f"Failed to send status: {e}")
     
     def start_test(self):
+        """Activeer testmodus, reset timers en verstuur direct een startnotificatie."""
         self.test_active = True
         self.test_data_active = True  # Enable test data generation
         self.test_start_time = time.time()
@@ -513,6 +586,7 @@ class WaterModule:
             log("error", f"Failed to send initial test data: {e}")
     
     def stop_test(self):
+        """Deactiveer testmodus en stuur één geconsolideerde stopnotificatie."""
         log("info", f"[TRACE] stop_test() CALLED")
         log("info", f"[TRACE] BEFORE stop: test_active={self.test_active}, current_level={self.current_level}, sensor_valid={self.sensor_valid}")
         
@@ -578,6 +652,7 @@ class WaterModule:
                 log("error", f"Failed to send consolidated test stop notification: {e}")
     
     def run(self):
+        """Hoofdlus: lees sensor/testdata, werk toestand bij, stuur periodieke status."""
         log("info", "WaterModule starting main loop")
         
         try:
@@ -638,6 +713,7 @@ class WaterModule:
             log("info", "Module stopped, pins set to safe")
     
     def _set_pins_safe(self):
+        """Zet alle kritieke uitgangen terug naar de veilige stand (waarde 1)."""
         try:
             for pin_name in ["interlock_pin", "pump_ok_pin", "heater_ok_pin"]:
                 pin_num = self.cfg[pin_name]
