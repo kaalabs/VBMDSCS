@@ -1,4 +1,4 @@
-"""Entrypoint voor de WaterModule op de ESP32-S3.
+"""Entrypoint voor de WaterModule op de ESP32‑WROOM‑32E.
 
 Taken
 -----
@@ -20,7 +20,9 @@ def handle_command(cmd):
     """Verwerk inkomende BLE-commando's.
 
     Ondersteunde commando's:
-    - "TEST START": activeert testmodus
+    - "TEST START": activeert klassieke testmodus (outputs geforceerd veilig)
+    - "TEST START PIPE": start pipeline test (synthetische metingen via parser)
+    - "TEST START PIPE OUT": pipeline test met vrijgave outputs (gevaarlijk; alleen testomgeving)
     - "TEST STOP": stopt testmodus
     - "TEST?": status van testmodus
     - "INFO?": JSON met actuele status voor het dashboard
@@ -34,8 +36,14 @@ def handle_command(cmd):
     log("info", f"Received command: {cmd}")
     
     if cmd == "TEST START":
-        water_module.start_test()
+        water_module.start_test(pipeline=False, allow_outputs=False)
         return "Test mode started"
+    elif cmd == "TEST START PIPE":
+        water_module.start_test(pipeline=True, allow_outputs=False)
+        return "Pipeline test started"
+    elif cmd == "TEST START PIPE OUT":
+        water_module.start_test(pipeline=True, allow_outputs=True)
+        return "Pipeline test with outputs started"
     elif cmd == "TEST STOP":
         water_module.stop_test()
         return "Test mode stopped"

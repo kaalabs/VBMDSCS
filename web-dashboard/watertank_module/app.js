@@ -456,7 +456,7 @@
   ui.cmds.forEach(b => b.addEventListener('click', async () => {
     const cmd = b.dataset.cmd;
     // Do not poll INFO? during test; rely solely on test stream
-    if (cmd === 'TEST START') {
+    if (cmd === 'TEST START' || cmd === 'TEST START PIPE' || cmd === 'TEST START PIPE OUT') {
       if (testPollTimer) { clearInterval(testPollTimer); testPollTimer = null; }
       setTestIndicator(true);
     } else if (cmd === 'TEST STOP') {
@@ -465,7 +465,7 @@
     }
     await sendCmd(cmd);
     // After TEST START/STOP, request a quick confirmation snapshot
-    if (cmd === 'TEST START' || cmd === 'TEST STOP') {
+    if (cmd.startsWith('TEST START') || cmd === 'TEST STOP') {
       try {
         await delay(120);
         await sendCmd('TEST?');
