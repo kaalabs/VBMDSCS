@@ -107,7 +107,7 @@
     let txt = '—';
     let boxClass = 'user-hint';
     let dotClass = 'uh-dot';
-    if (ready === false) { txt = 'Initialiseren…'; boxClass += ' uh-ok'; dotClass += ' ok'; }
+    if (ready === false) { txt = 'Initialiseren…'; /* neutral styling - no additional classes */ }
     else if (state === 'OK') { txt = 'Niveau OK'; boxClass += ' uh-ok'; dotClass += ' ok'; }
     else if (state === 'LOW') { txt = 'Niveau laag — vul de tank bij'; boxClass += ' uh-low'; dotClass += ' low'; }
     else if (state === 'BOTTOM') { txt = 'Tank leeg — machine beveiligd. Vul de tank.'; boxClass += ' uh-bottom'; dotClass += ' bottom'; }
