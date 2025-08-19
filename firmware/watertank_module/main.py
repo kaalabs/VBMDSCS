@@ -12,9 +12,33 @@ Tip voor lezers: bekijk `water_module.py` voor de kernlogica en BLE-events.
 from machine import Pin
 from water_module import WaterModule, log, DEFAULT_CONFIG
 import time
+import ujson
 
 # Global reference to the water module
 water_module = None
+
+def save_config():
+    """Save current water module configuration to persistent storage."""
+    global water_module
+    if not water_module:
+        return False
+    
+    try:
+        with open(water_module.cfg.get("persist_path", "config.json"), "w") as f:
+            # Only save non-default values to keep the file clean
+            config_to_save = {}
+            for key, value in water_module.cfg.items():
+                if key in DEFAULT_CONFIG and DEFAULT_CONFIG[key] != value:
+                    config_to_save[key] = value
+                elif key not in DEFAULT_CONFIG:
+                    config_to_save[key] = value
+            
+            f.write(ujson.dumps(config_to_save, indent=2))
+        log("info", f"Configuration saved to {water_module.cfg.get('persist_path', 'config.json')}")
+        return True
+    except Exception as e:
+        log("error", f"Failed to save config: {e}")
+        return False
 
 def handle_command(cmd):
     """Verwerk inkomende BLE-commando's.
@@ -27,6 +51,10 @@ def handle_command(cmd):
     - "TEST?": status van testmodus
     - "INFO?": JSON met actuele status voor het dashboard
     - "CFG?": JSON met essentiële configuratie
+    - "CAL FULL": kalibreer huidige niveau als 'vol'
+    - "CAL EMPTY": kalibreer huidige niveau als 'leeg'
+    - "CAL CLEAR": wis kalibratie-instellingen
+    - "CFG RESET": herstel configuratie naar standaardwaarden
     """
     global water_module
     if not water_module:
@@ -48,8 +76,15 @@ def handle_command(cmd):
         water_module.stop_test()
         return "Test mode stopped"
     elif cmd == "TEST?":
-        status = "Test active" if water_module.test_active else "Test inactive"
-        return f"Test status: {status}"
+        # Return JSON for consistency with other status commands
+        test_status = {
+            "test_active": water_module.test_active,
+            "test_data_active": getattr(water_module, 'test_data_active', False),
+            "test_pipeline": getattr(water_module, 'test_pipeline', False),
+            "test_allow_outputs": getattr(water_module, 'test_allow_outputs', False),
+            "test_data_id": getattr(water_module, 'test_data_id', 0)
+        }
+        return ujson.dumps(test_status)
     elif cmd == "INFO?":
         # Retourneer statusinformatie als JSON (dashboard verwacht JSON).
         # Tijdens test: gebruik test-niveau; anders echte sensor.
@@ -67,8 +102,8 @@ def handle_command(cmd):
             "pct": round(pct, 1),
             "state": water_module.current_state,
             "ready": water_module.ready,
-            "cal_empty_mm": water_module.cfg.get("min_mm", 0),
-            "cal_full_mm": water_module.cfg.get("max_mm", 100),
+            "cal_empty_mm": water_module.cfg.get("cal_empty_mm", 190.0),
+            "cal_full_mm": water_module.cfg.get("cal_full_mm", 50.0),
             "test_active": water_module.test_active,
             "current_level_mm": current_level
         }
@@ -88,6 +123,49 @@ def handle_command(cmd):
             "ble_name": water_module.cfg.get("ble_name", "VBMCSWT")
         }
         return ujson.dumps(essential_cfg)
+    elif cmd == "CAL FULL":
+        # Set current level as full calibration point
+        if water_module.sensor_valid and water_module.current_level is not None:
+            water_module.cfg["cal_full_mm"] = water_module.current_level
+            if save_config():
+                return f"Full level calibrated to {water_module.current_level:.1f}mm"
+            else:
+                return "Calibration set but failed to save config"
+        else:
+            return "Cannot calibrate: no valid sensor reading"
+    elif cmd == "CAL EMPTY":
+        # Set current level as empty calibration point
+        if water_module.sensor_valid and water_module.current_level is not None:
+            water_module.cfg["cal_empty_mm"] = water_module.current_level
+            if save_config():
+                return f"Empty level calibrated to {water_module.current_level:.1f}mm"
+            else:
+                return "Calibration set but failed to save config"
+        else:
+            return "Cannot calibrate: no valid sensor reading"
+    elif cmd == "CAL CLEAR":
+        # Clear calibration values (reset to None/defaults)
+        water_module.cfg["cal_full_mm"] = None
+        water_module.cfg["cal_empty_mm"] = None
+        if save_config():
+            return "Calibration cleared"
+        else:
+            return "Calibration cleared but failed to save config"
+    elif cmd == "CFG RESET":
+        # Reset configuration to defaults
+        try:
+            # Keep essential runtime state but reset config values
+            old_ble_name = water_module.cfg.get("ble_name", "VBMCSWT")
+            water_module.cfg.clear()
+            water_module.cfg.update(DEFAULT_CONFIG.copy())
+            
+            # Save the reset config
+            if save_config():
+                return f"Configuration reset to defaults (BLE name: {old_ble_name})"
+            else:
+                return "Configuration reset but failed to save"
+        except Exception as e:
+            return f"Failed to reset config: {e}"
     else:
         return f"Unknown command: {cmd}"
 

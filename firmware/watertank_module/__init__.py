@@ -7,7 +7,8 @@ from .level_estimator import (
     STATE_FAULT,
 )
 from .simple_ble import SimpleBLE
-from .water_module import WaterModule, DEFAULT_CONFIG, main
+from .water_module import WaterModule, DEFAULT_CONFIG
+from .main import main
 
 __all__ = [
     "DYPA02YY",
