@@ -67,8 +67,8 @@ def handle_command(cmd):
             "pct": round(pct, 1),
             "state": water_module.current_state,
             "ready": water_module.ready,
-            "cal_empty_mm": water_module.cfg.get("min_mm", 0),
-            "cal_full_mm": water_module.cfg.get("max_mm", 100),
+            "cal_empty_mm": water_module.cfg.get("cal_empty_mm", water_module.cfg.get("max_mm", 0)),
+            "cal_full_mm": water_module.cfg.get("cal_full_mm", water_module.cfg.get("min_mm", 0)),
             "test_active": water_module.test_active,
             "current_level_mm": current_level
         }
@@ -79,6 +79,8 @@ def handle_command(cmd):
         essential_cfg = {
             "min_mm": water_module.cfg.get("min_mm", 0),
             "max_mm": water_module.cfg.get("max_mm", 100),
+            "cal_empty_mm": water_module.cfg.get("cal_empty_mm", water_module.cfg.get("max_mm", 0)),
+            "cal_full_mm": water_module.cfg.get("cal_full_mm", water_module.cfg.get("min_mm", 0)),
             "timeout_ms": water_module.cfg.get("timeout_ms", 1000),
             "sample_hz": water_module.cfg.get("sample_hz", 10),
             "hysteresis_pct": water_module.cfg.get("hysteresis_pct", 5),
@@ -88,8 +90,74 @@ def handle_command(cmd):
             "ble_name": water_module.cfg.get("ble_name", "VBMCSWT")
         }
         return ujson.dumps(essential_cfg)
+    elif cmd == "CAL FULL":
+        # Gebruik EMA indien beschikbaar, anders huidige sensorwaarde
+        lvl = water_module.ema_level if (water_module.ema_level is not None and water_module.sensor_valid) else water_module.current_level
+        try:
+            if lvl is not None:
+                water_module.cfg["cal_full_mm"] = float(lvl)
+                _save_cfg(water_module.cfg)
+                return "CAL FULL saved"
+            return "No level"
+        except Exception as e:
+            return f"CAL FULL error: {e}"
+    elif cmd == "CAL EMPTY":
+        lvl = water_module.ema_level if (water_module.ema_level is not None and water_module.sensor_valid) else water_module.current_level
+        try:
+            if lvl is not None:
+                water_module.cfg["cal_empty_mm"] = float(lvl)
+                _save_cfg(water_module.cfg)
+                return "CAL EMPTY saved"
+            return "No level"
+        except Exception as e:
+            return f"CAL EMPTY error: {e}"
+    elif cmd == "CAL CLEAR":
+        try:
+            water_module.cfg["cal_full_mm"] = None
+            water_module.cfg["cal_empty_mm"] = None
+            _save_cfg(water_module.cfg)
+            return "CAL cleared"
+        except Exception as e:
+            return f"CAL CLEAR error: {e}"
+    elif cmd == "CFG RESET":
+        try:
+            # Reset naar DEFAULT_CONFIG en bewaar
+            new_cfg = DEFAULT_CONFIG.copy()
+            _save_cfg(new_cfg)
+            # Forceer herladen in runtime zonder reboot
+            water_module.cfg = new_cfg
+            return "CFG reset"
+        except Exception as e:
+            return f"CFG RESET error: {e}"
     else:
         return f"Unknown command: {cmd}"
+
+def _save_cfg(cfg):
+    """Bewaar configuratie atomaal naar `persist_path`."""
+    import ujson, os
+    path = cfg.get("persist_path", "config.json")
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            f.write(ujson.dumps(cfg))
+        try:
+            # Atomic replace wanneer mogelijk
+            os.remove(path)
+        except Exception:
+            pass
+        try:
+            os.rename(tmp, path)
+        except Exception:
+            # Fallback copy
+            with open(path, "w") as f:
+                f.write(ujson.dumps(cfg))
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+    except Exception:
+        # Laat fout bubbelen naar aanroeper
+        raise
 
 def main():
     """Start de module, bind de BLE-handler en ga de hoofdlus in."""

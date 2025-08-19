@@ -1,0 +1,19 @@
+{
+  "sample_hz": 8,
+  "window": 5,
+  "ema_alpha": 0.25,
+  "min_mm": 30,
+  "max_mm": 220,
+  "timeout_ms": 1200,
+  "bottom_pct": 10,
+  "low_pct": 30,
+  "hysteresis_pct": 4,
+  "cal_full_mm": 50,
+  "cal_empty_mm": 190,
+  "allow_pump_at_low": true,
+  "log_level": "info",
+  "ble_enabled": true,
+  "ble_name": "VBMCSWT",
+  "use_pump_ok": false,
+  "use_heater_ok": false
+}

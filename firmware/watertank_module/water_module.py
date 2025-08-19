@@ -105,6 +105,8 @@ DEFAULT_CONFIG = {
     "wdt_enabled": True,
     "wdt_timeout_ms": 8000,
     "log_level": "info",
+    # BLE
+    "ble_send_interval_ms": 1000,
     "persist_path": "config.json",
     "boot_grace_s": 3,
     "test_period_s": 20,
@@ -167,6 +169,8 @@ def load_config():
         merged["uart_buf_max"] = max(64, int(merged.get("uart_buf_max", 256)))
         merged["wdt_timeout_ms"] = max(2000, int(merged.get("wdt_timeout_ms", 8000)))
         merged["wdt_enabled"] = bool(merged.get("wdt_enabled", True))
+        # BLE rate limiter niet-negatief
+        merged["ble_send_interval_ms"] = max(0, int(merged.get("ble_send_interval_ms", 1000)))
         # Clamp test injectie parameters
         def _clampf(v, a, b, d):
             try:
@@ -326,7 +330,8 @@ class WaterModule:
     def _init_ble(self):
         """Initialiseer de eenvoudige BLE-service en start adverteren."""
         try:
-            self.ble = SimpleBLE(self.cfg["ble_name"])
+            # Respecteer optionele BLE rate limit voor NOTIFY's (ble_send_interval_ms)
+            self.ble = SimpleBLE(self.cfg["ble_name"], send_interval_ms=int(self.cfg.get("ble_send_interval_ms", 1000)))
             log("info", f"BLE initialized with name: {self.cfg['ble_name']}")
         except Exception as e:
             log("error", f"BLE initialization failed: {e}")
@@ -562,7 +567,7 @@ class WaterModule:
         if self.ble and (force_send or (self._diff_ms(now_ms, self._last_test_ble_ms) >= 1000)):
             test_data = {
                 "seq": self.seq,
-                "ts_ms": int(self._now_ms()),
+                "ts_ms": int(time.time() * 1000),
                 # Core status fields (same as _send_status)
                 "state": self.current_state,
                 "pct": self.test_pct,
@@ -570,7 +575,7 @@ class WaterModule:
                 "test_active": True,
                 "current_level_mm": self.test_level,
                 "last_sensor_time": self.last_sensor_time,
-                "ema_mm": self.test_level,
+                "ema_mm": self.ema_level if self.sensor_valid else None,
                 "obs_min": self.cfg["min_mm"],
                 "obs_max": self.cfg["max_mm"],
                 
@@ -659,6 +664,51 @@ class WaterModule:
         except Exception as e:
             log("error", f"UART read failed: {e}")
             self.sensor_valid = False
+
+    def _process_uart_text_line(self, raw_line):
+        """Parse één UART-regel meting in mm en werk sensortoestand bij.
+
+        - Negeer lege/corrupte regels of commentaar (#)
+        - Clamp naar plausibel bereik [min_mm, max_mm]
+        - Houd eenvoudige fail-counter bij om korte glitches te negeren
+        """
+        try:
+            if isinstance(raw_line, (bytes, bytearray)):
+                s = raw_line.decode('utf-8', 'ignore')
+            else:
+                s = str(raw_line)
+            s = s.replace('\r', '').strip()
+            if not s or s.startswith('#'):
+                return
+            mm = float(s)
+        except Exception:
+            return
+
+        try:
+            mn = float(self.cfg.get("min_mm", 0))
+            mx = float(self.cfg.get("max_mm", 1000))
+        except Exception:
+            mn, mx = 0.0, 1000.0
+
+        # Buiten plausibel venster met marge → fout tellen
+        if mm < (mn - 10) or mm > (mx + 10):
+            try:
+                self._sensor_fail_count += 1
+                if self._sensor_fail_count >= self._sensor_fail_threshold:
+                    self.sensor_valid = False
+            except Exception:
+                self.sensor_valid = False
+            return
+
+        if mm < mn:
+            mm = mn
+        if mm > mx:
+            mm = mx
+
+        self.current_level = mm
+        self.sensor_valid = True
+        self.last_sensor_time = time.time()
+        self._sensor_fail_count = 0
 
     def _enqueue_test_uart_line(self, level_mm):
         """Bouw een UART-regel voor `level_mm` met optionele ruis/corruptie en splits in chunks.
@@ -750,7 +800,7 @@ class WaterModule:
             
             status_data = {
                 "seq": self.seq,
-                "ts_ms": int(self._now_ms()),
+                "ts_ms": int(time.time() * 1000),
                 "state": self.current_state,
                 "pct": pct,
                 "ready": self.ready,
@@ -758,7 +808,7 @@ class WaterModule:
                 "current_level_mm": display_level,
                 "last_sensor_time": self.last_sensor_time,
                 # Add fields that the dashboard expects for the gauge
-                "ema_mm": display_level if is_valid else None,  # None if invalid
+                "ema_mm": (self.ema_level if is_valid else None),  # None if invalid
                 "obs_min": self.cfg["min_mm"],
                 "obs_max": self.cfg["max_mm"],
                 # DEBUG FIELDS
@@ -860,7 +910,7 @@ class WaterModule:
                     "test_active": False,
                     "current_level_mm": self.current_level if self.sensor_valid else None,
                     "last_sensor_time": self.last_sensor_time,
-                    "ema_mm": self.current_level if self.sensor_valid else None,
+                    "ema_mm": self.ema_level if self.sensor_valid else None,
                     "obs_min": self.cfg["min_mm"],
                     "obs_max": self.cfg["max_mm"],
                     
@@ -872,6 +922,7 @@ class WaterModule:
                     "final_test_level": self.test_level,  # Last test level for reference
                     "current_real_level": self.current_level if self.sensor_valid else None,
                     "current_pct": pct,
+                    "current_state": self.current_state,
                     "sensor_valid": self.sensor_valid,
                     
                     # DEBUG fields

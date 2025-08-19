@@ -10,6 +10,10 @@ De belangrijkste bestanden zijn:
 - `system-overview.svg` – visuele weergave van de modules in het systeem.
 - `quickstart-flow.svg` – stroomdiagram om snel aan de slag te gaan.
 
+Aanvullend:
+
+- Zie ook de BLE Quickstart in `firmware/watertank_module/README.md` voor gebruik van de Nordic UART‑achtige service (`simple_ble.py`) en testinstructies met nRF Connect.
+
 Open de Markdown-bestanden in een editor of viewer naar keuze en bekijk de SVG's
 in een browser. Begin met `system-overview.svg` voor het grote plaatje en lees
 vervolgens `system-architecture.md` voor meer detail. Gebruik de kalibratiegids

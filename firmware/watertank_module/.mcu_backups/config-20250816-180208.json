@@ -27,7 +27,7 @@
   "log_level": "info",
   "ble_enabled": true,
   "ble_name": "VBMCSWT",
-  "ble_send_interval_ms": 1000,
   "use_pump_ok": false,
   "use_heater_ok": false
 }
+

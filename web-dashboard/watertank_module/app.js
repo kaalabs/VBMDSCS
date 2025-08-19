@@ -37,6 +37,8 @@
   };
 
   let device=null, server=null, rxChar=null, txChar=null, buffer='';
+  // Serialize BLE writes to avoid 'GATT operation already in progress'
+  let writeChain = Promise.resolve();
   let reconnectTimer = null;
   // Polling timer placeholder (kept to avoid ReferenceErrors in existing logic)
   let testPollTimer = null; // not used for periodic INFO? anymore
@@ -170,7 +172,15 @@
       let payload = txt;
       if (!payload.endsWith('\n')) payload += '\n';
       if (!payload.endsWith('\r\n')) payload = payload.replace(/\n$/,'\r\n');
-      await rxChar.writeValue(new TextEncoder().encode(payload));
+      // Chain writes and ensure the chain never stays rejected
+      writeChain = writeChain
+        .then(async () => {
+          await rxChar.writeValue(new TextEncoder().encode(payload));
+          // tiny pacing to give BLE stack room between ops
+          await new Promise(r => setTimeout(r, 20));
+        })
+        .catch(() => {});
+      await writeChain; // await current op completion
       log('> '+txt, 'send');
     }catch(e){
       log('Commando versturen faalde: ' + (e.message||e), 'error');
@@ -199,7 +209,7 @@
     await setupGatt();
     setConn('connected'); enableCmds(true);
     log('Verbonden met ' + (device.name || 'apparaat'));
-    sendCmd('INFO?'); sendCmd('CFG?');
+    await sendCmd('INFO?'); await sendCmd('CFG?');
     if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
   }
 
@@ -226,7 +236,7 @@
         } else {
           setConn('connected'); enableCmds(true);
         }
-        sendCmd('INFO?'); sendCmd('CFG?');
+        await sendCmd('INFO?'); await sendCmd('CFG?');
         if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
         return;
       }
@@ -247,7 +257,7 @@
         await setupGatt();
         setConn('connected'); enableCmds(true);
         log('Opnieuw verbonden met ' + (device.name || 'apparaat'));
-        sendCmd('INFO?'); sendCmd('CFG?');
+        await sendCmd('INFO?'); await sendCmd('CFG?');
         if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
       }
     }catch(e){
@@ -280,8 +290,18 @@
         log(`[BLE] Raw message received: ${js}`, 'warn');
         const isTestEvent = (o.evt === 'test');
         // Optional latency logging
-        if ('ts_ms' in o) {
-          try { const lag = Date.now() - Number(o.ts_ms); if (!isNaN(lag)) log(`[BLE] latency ${lag}ms`); } catch {}
+        // Log latency alleen als we een plausibele epoch-timestamp hebben
+        if ('ts_ms' in o || 'ts_epoch_ms' in o) {
+          try {
+            const epochMs = (o.ts_epoch_ms != null) ? Number(o.ts_epoch_ms) : Number(o.ts_ms);
+            // Alleen als het lijkt op epoch (>= ~2001 in ms) en in realistisch venster
+            if (!isNaN(epochMs) && epochMs > 1e12) {
+              const lag = Date.now() - epochMs;
+              if (lag > -2000 && lag < 120000) {
+                log(`[BLE] latency ${Math.round(lag)}ms`);
+              }
+            }
+          } catch {}
         }
         // Drop out-of-order messages based on seq when present
         if ('seq' in o) {

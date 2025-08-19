@@ -1,9 +1,26 @@
-"""Eenvoudige BLE-helpers voor status/commando via Nordic UART-profiel.
+"""Eenvoudige BLE-helper voor een Nordic UART-achtige service (NUS).
+
+Overzicht
+---------
+- Biedt een BLE peripheral die tekstregels ontvangt (RX) en notificaties verstuurt (TX).
+- RX: ontvangen bytes → UTF-8 decode → line framing op "\n" (CRLF toegestaan) →
+  aanroep van ``on_command(str)`` per complete regel.
+- TX: berichten worden in een kleine queue geplaatst met coalescing en pacing;
+  verzending gebeurt in chunks voor compatibiliteit met ATT/MTU.
 
 Compatibiliteit
 ---------------
-Ontworpen voor MicroPython varianten met kleine verschillen in GATT API's.
-Minimalistisch gehouden (geen TX-queue) om geheugen en timing te sparen.
+- Werkt op MicroPython varianten/ports met kleine verschillen in GATT API's (handle-volgorde).
+- Robuuste mapping van characteristic value handles (NOTIFY/WRITE) voor verschillende ports.
+- Gebruikt ``micropython.schedule`` indien beschikbaar om vanuit IRQ-context veilig callbacks te plannen.
+
+Ontwerpkeuzes
+-------------
+- Line-based command interface met een RX-accumulator begrensd op ~512 tekens.
+- TX micro-queue (max 32 items) met drop-oudste bij overflow en lichte coalescing van kleine payloads.
+- Chunks van 18 bytes per ``gatts_notify`` voor conservatieve compatibiliteit.
+- Advertising met 128-bit NUS UUID en verkorte naam; interval ~500 ms.
+ - Optionele rate limiter voor NOTIFY (``send_interval_ms``) om maximaal X ms tussen verzendingen te houden.
 """
 
 import time
@@ -20,10 +37,31 @@ except Exception:
 
 
 class SimpleBLE:
-    """Minimalistische Nordic-UART-achtige status/commandoservice."""
+    """Nordic-UART-achtige status/commandoservice voor eenvoudige tekst I/O.
 
-    def __init__(self, name="VBMCSWT"):
+    Functie-overzicht:
+    - Advertise en expose een service met één RX (WRITE) en één TX (NOTIFY) characteristic
+      met de Nordic UART UUID's.
+    - Ontvangt inkomende tekstregels en roept ``on_command(str)`` aan per complete regel.
+    - Verstuurt tekst via een kleine queue met chunking, pacing en eenvoudige coalescing.
+
+    Belangrijke attributen:
+    - ``name``: Apparatennaam voor GAP advertising.
+    - ``connections``: Set met actieve connection handles.
+    - ``_tx_queue``: Interne wachtrij met te verzenden bytestrings (max ``_queue_max`` items).
+    - ``_chunk_size``: Grootte van een notify-chunk (conservatief 18 bytes).
+    - ``_rx_accum``: Accumulator voor inkomende data tot een newline ("\n") wordt gezien.
+    """
+
+    def __init__(self, name="VBMCSWT", send_interval_ms=0):
         self.name = name
+        # Optionele rate limiter voor NOTIFY: 0 = geen limiet
+        try:
+            self._send_interval_ms = max(0, int(send_interval_ms))
+        except Exception:
+            self._send_interval_ms = 0
+        self._last_send_ms = 0
+        self._rate_timer = None  # One-shot timer voor vertraagde drain
         self.ble = bluetooth.BLE()
         self.ble.active(True)
         try:
@@ -59,12 +97,22 @@ class SimpleBLE:
             self._rx_val_handle = None
         self.connections = set()
 
-        # Simple BLE: geen TX-queue; notify stuurt direct met korte delay per chunk
-        
+        # TX micro-queue & RX line framing
+        self._tx_queue = []            # lijst met bytes-payloads in FIFO volgorde
+        self._queue_max = 32           # max aantal wachtrij-items; drop oudste bij overflow
+        self._chunk_size = 18          # chunkgrootte voor gatts_notify (conservatief vs. MTU)
+        self._draining = False         # vlag of drain-loop reeds gepland/actief is
+        self._rx_accum = ""            # buffer voor (deel)regels totdat een '\n' verschijnt
+
         # Ensure we start advertising immediately
         self._start_adv()
 
     def _now_ms(self):
+        """Huidige tijd in milliseconden.
+
+        Probeert ``time.ticks_ms`` (MicroPython) en valt terug op ``int(time.time()*1000)``
+        voor omgevingen zonder ``ticks_ms``.
+        """
         try:
             return time.ticks_ms()
         except Exception:
@@ -73,7 +121,7 @@ class SimpleBLE:
         
 
     def _uuid128_le(self, uuid_str):
-        """Converteer UUID-string naar 128-bit little-endian bytes zonder slicing."""
+        """Converteer UUID-string naar 128-bit little-endian bytes (voor advertising)."""
         hexs = uuid_str.replace('-', '')
         buf = bytearray()
         for i in range(0, 32, 2):
@@ -84,7 +132,12 @@ class SimpleBLE:
         return bytes(out)
 
     def _adv_payload(self, name=None, services=None):
-        # Bouw advertising payload binnen 31 bytes: flags + 128-bit services + korte naam
+        """Bouw advertising payload (max 31 bytes): flags + (optioneel) 128-bit services + naam.
+
+        - Flags 0x06: LE General Discoverable + BR/EDR Not Supported
+        - 128-bit services (AD type 0x07) in LE bytevolgorde
+        - Verkorte naam (AD type 0x08) binnen resterende ruimte
+        """
         payload = bytearray()
         # Flags: 0x06 = LE General Discoverable + BR/EDR Not Supported
         payload += b"\x02\x01\x06"
@@ -110,10 +163,11 @@ class SimpleBLE:
         return bytes(payload)
 
     def _scan_resp_payload(self, name=None):
-        # Niet gebruikt; laat leeg voor maximale compatibiliteit tussen ports
+        """Niet gebruikt: lege scan response voor brede port-compatibiliteit."""
         return b""
 
     def _start_adv(self):
+        """Start (opnieuw) adverteren met NUS UUID en verkorte naam."""
         try:
             adv = self._adv_payload(name=self.name, services=[self._UART_UUID_STR])
             try:
@@ -123,7 +177,43 @@ class SimpleBLE:
         except Exception:
             pass
 
+    def _schedule_drain_after(self, delay_ms):
+        """Plan een drain-iteratie na een vertraging met een one-shot timer indien beschikbaar."""
+        try:
+            from machine import Timer
+        except Exception:
+            return False
+        try:
+            # Stop bestaande timer indien actief
+            if self._rate_timer is not None:
+                try:
+                    self._rate_timer.deinit()
+                except Exception:
+                    pass
+                self._rate_timer = None
+            self._rate_timer = Timer(-1)
+            def _tmr_cb(_):
+                try:
+                    if micropython and hasattr(micropython, "schedule"):
+                        def _run(_):
+                            self._schedule_drain()
+                        micropython.schedule(_run, 0)
+                    else:
+                        self._schedule_drain()
+                except Exception:
+                    pass
+                try:
+                    self._rate_timer.deinit()
+                except Exception:
+                    pass
+                self._rate_timer = None
+            self._rate_timer.init(period=max(1, int(delay_ms)), mode=Timer.ONE_SHOT, callback=_tmr_cb)
+            return True
+        except Exception:
+            return False
+
     def _irq(self, event, data):
+        """BLE IRQ handler: connect (1), disconnect (2), write (3)."""
         if event == 1:  # connect
             conn_handle, _, _ = data
             self.connections.add(conn_handle)
@@ -140,60 +230,168 @@ class SimpleBLE:
                     raw = None
                 if not raw:
                     return
-                cmd_txt = None
+                # Accumulate and frame by lines (\n). Tolerate CRLF.
                 try:
-                    # Accept LF or CRLF terminated commands
-                    cmd_txt = raw.decode().replace('\r','').strip()
+                    self._rx_accum += raw.decode('utf-8', 'ignore')
                 except Exception:
                     return
-                if micropython and hasattr(micropython, "schedule"):
-                    def _run_cmd(_):
+                # bound buffer to avoid unbounded growth
+                if len(self._rx_accum) > 512:
+                    self._rx_accum = self._rx_accum[-512:]
+                while True:
+                    nl = self._rx_accum.find('\n')
+                    if nl < 0:
+                        break
+                    line = self._rx_accum[:nl]
+                    self._rx_accum = self._rx_accum[nl+1:]
+                    cmd_txt = line.replace('\r', '').strip()
+                    if not cmd_txt:
+                        continue
+                    if micropython and hasattr(micropython, "schedule"):
+                        # Use a scheduled callback with required single-arg signature
+                        def _run_cmd_cb(_):
+                            try:
+                                response = self.on_command(cmd_txt)
+                                if response:
+                                    self.notify(response)
+                            except Exception:
+                                pass
+                        try:
+                            micropython.schedule(_run_cmd_cb, 0)
+                        except Exception:
+                            try:
+                                response = self.on_command(cmd_txt)
+                                if response:
+                                    self.notify(response)
+                            except Exception:
+                                pass
+                    else:
                         try:
                             response = self.on_command(cmd_txt)
                             if response:
                                 self.notify(response)
                         except Exception:
                             pass
-                    try:
-                        micropython.schedule(_run_cmd, 0)
-                    except Exception:
-                        try:
-                            response = self.on_command(cmd_txt)
-                            if response:
-                                self.notify(response)
-                        except Exception:
-                            pass
-                else:
-                    try:
-                        response = self.on_command(cmd_txt)
-                        if response:
-                            self.notify(response)
-                    except Exception:
-                        pass
 
     def on_command(self, cmd):
-        """Te overschrijven callback: verwerk een tekstcommando en retourneer optioneel antwoord."""
+        """Te overschrijven callback: verwerk één tekstregel als commando en
+        retourneer optioneel een antwoord (``str`` of ``bytes``).
+        """
         pass
 
     def notify(self, text):
+        """Queueer een bericht voor TX via NOTIFY met coalescing en pacing."""
         if text is None:
             return
-        if not self.connections:
+        data = text if isinstance(text, bytes) else text.encode()
+        # Coalesce small payloads by appending when last item is small
+        if self._tx_queue and (len(self._tx_queue[-1]) + len(data) <= 240):
+            self._tx_queue[-1] += data
+        else:
+            self._tx_queue.append(data)
+        # Prevent unbounded growth
+        while len(self._tx_queue) > self._queue_max:
+            try:
+                self._tx_queue.pop(0)
+            except Exception:
+                break
+        self._schedule_drain()
+
+    def notify_priority(self, text):
+        """Plaats bericht vooraan in de queue en start direct met verzenden."""
+        if text is None:
             return
         data = text if isinstance(text, bytes) else text.encode()
-        # Send in 18-byte chunks with small delay
-        chunk_size = 18
-        for c in list(self.connections):
+        self._tx_queue.insert(0, data)
+        while len(self._tx_queue) > self._queue_max:
             try:
-                for i in range(0, len(data), chunk_size):
-                    self.ble.gatts_notify(c, self._tx_val_handle, data[i:i+chunk_size])
+                self._tx_queue.pop(1 if len(self._tx_queue) > 1 else 0)
+            except Exception:
+                break
+        self._schedule_drain()
+
+    def _schedule_drain(self):
+        """Plan de drain-actie als deze nog niet actief is (eventueel met scheduling)."""
+        if self._draining:
+            return
+        self._draining = True
+        if micropython and hasattr(micropython, "schedule"):
+            try:
+                def _drain_cb(_):
+                    self._drain_once()
+                micropython.schedule(_drain_cb, 0)
+                return
+            except Exception:
+                pass
+        # Fallback: call inline
+        self._drain_once()
+
+    def _drain_once(self):
+        """Eén drain-iteratie: coalesce en chunked-notify naar alle verbindingen.
+
+        Zonder verbindingen wordt backlog gereduceerd tot het laatste item om geheugen te sparen.
+        """
+        # Respecteer optionele verzend-interval (rate limit)
+        if self._send_interval_ms and self._tx_queue:
+            now_ms = self._now_ms()
+            try:
+                elapsed = (now_ms - self._last_send_ms) if self._last_send_ms else self._send_interval_ms
+            except Exception:
+                elapsed = self._send_interval_ms
+            if elapsed < self._send_interval_ms:
+                remaining = self._send_interval_ms - elapsed
+                # Stop huidige drain en plan later opnieuw
+                self._draining = False
+                if not self._schedule_drain_after(remaining):
+                    # Zonder timer geen busy-wait doen; volgende notify triggert opnieuw
+                    pass
+                return
+        try:
+            # If no connections, drop old backlog but keep latest
+            if not self.connections:
+                if len(self._tx_queue) > 1:
+                    self._tx_queue = self._tx_queue[-1:]
+                self._draining = False
+                return
+            if not self._tx_queue:
+                self._draining = False
+                return
+            # Pop one payload and (light) coalesce next small one
+            payload = self._tx_queue.pop(0)
+            if self._tx_queue and len(payload) < 64 and (len(payload) + len(self._tx_queue[0]) <= 240):
+                try:
+                    payload += self._tx_queue.pop(0)
+                except Exception:
+                    pass
+            # Send to all connections in chunks
+            for c in list(self.connections):
+                try:
+                    for i in range(0, len(payload), self._chunk_size):
+                        self.ble.gatts_notify(c, self._tx_val_handle, payload[i:i+self._chunk_size])
+                        try:
+                            time.sleep_ms(5)
+                        except Exception:
+                            pass
+                except Exception:
                     try:
-                        time.sleep_ms(5)
+                        self.connections.remove(c)
                     except Exception:
                         pass
+            # Update laatst verzonden tijdstip na succesvolle verzending
+            try:
+                self._last_send_ms = self._now_ms()
             except Exception:
+                self._last_send_ms = 0
+        finally:
+            # Reschedule if queue still has data
+            if self._tx_queue and (micropython and hasattr(micropython, "schedule")):
                 try:
-                    self.connections.remove(c)
-                except ValueError:
-                    pass
+                    def _drain_cb2(_):
+                        self._drain_once()
+                    micropython.schedule(_drain_cb2, 0)
+                except Exception:
+                    # Fallback immediate to avoid stall
+                    self._drain_once()
+            else:
+                self._draining = False
 
