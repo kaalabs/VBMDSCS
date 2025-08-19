@@ -310,6 +310,13 @@ class SimpleBLE:
                 break
         self._schedule_drain()
 
+    def clear_tx_backlog(self):
+        """Leeg de TX-wachtrij onmiddellijk om verouderde berichten te droppen."""
+        try:
+            self._tx_queue = []
+        except Exception:
+            pass
+
     def _schedule_drain(self):
         """Plan de drain-actie als deze nog niet actief is (eventueel met scheduling)."""
         if self._draining:

@@ -23,7 +23,7 @@
     .b-red { background: #fee2e2; color: #991b1b; }
 
     .bar { width: 100%; height: 12px; background: #eef2ff; border-radius: 6px; overflow: hidden; }
-    .bar > div { height: 100%; width: 0%; transition: width .2s; }
+    .bar > div { height: 100%; width: 0%; transition: width .2s; background: var(--blue); }
     .tone-green { background: var(--good); }
     .tone-yellow { background: var(--warn); }
     .tone-red { background: var(--bad); }

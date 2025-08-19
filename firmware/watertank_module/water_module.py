@@ -798,11 +798,14 @@ class WaterModule:
                 pct = self._update_level_state()
             log("info", f"[TRACE] Calculated pct={pct}, final state={self.current_state}")
             
+            # Tijdens sensorfout geen waterniveau tonen (UI laat '—' zien)
+            pct_for_display = pct if is_valid else None
+
             status_data = {
                 "seq": self.seq,
                 "ts_ms": int(time.time() * 1000),
                 "state": self.current_state,
-                "pct": pct,
+                "pct": pct_for_display,
                 "ready": self.ready,
                 "test_active": self.test_active,
                 "current_level_mm": display_level,
@@ -811,6 +814,8 @@ class WaterModule:
                 "ema_mm": (self.ema_level if is_valid else None),  # None if invalid
                 "obs_min": self.cfg["min_mm"],
                 "obs_max": self.cfg["max_mm"],
+                # Provide validity explicitly
+                "sensor_valid": bool(self.sensor_valid),
                 # DEBUG FIELDS
                 "DEBUG_test_level": self.test_level,
                 "DEBUG_current_level": self.current_level,
@@ -845,9 +850,15 @@ class WaterModule:
         # Reset test BLE timer so we can send immediately
         self._last_test_ble_ms = 0
         
-        # Send immediate small start event with priority if available
+        # Drop old backlog and send immediate small start event with priority if available
         if self.ble:
             try:
+                try:
+                    # Maak de TX-queue leeg zodat test start events niet worden vertraagd
+                    if hasattr(self.ble, 'clear_tx_backlog'):
+                        self.ble.clear_tx_backlog()
+                except Exception:
+                    pass
                 test_start_data = {
                     "evt": "test",
                     "test_active": True,
@@ -887,11 +898,9 @@ class WaterModule:
             self._read_sensor()
             log("info", f"[TRACE] After sensor read: current_level={self.current_level}, sensor_valid={self.sensor_valid}")
         
-        # If no valid sensor data, set to FAULT state
+        # If no valid sensor data, keep last known level; don't force to 0.0 to avoid fake 0%/100%
         if not self.sensor_valid:
-            log("info", f"[TRACE] No valid sensor - setting current_level to 0.0")
-            self.current_level = 0.0  # Invalid level
-            log("info", f"[TRACE] current_level set to: {self.current_level}")
+            log("info", f"[TRACE] No valid sensor - preserving last current_level for display consistency")
         
         # Update state based on real sensor level
         log("info", f"[TRACE] Calling _update_level_state_from_level with level={self.current_level}")
@@ -901,11 +910,17 @@ class WaterModule:
         # Send SINGLE consolidated notification after test stop to prevent BLE overload
         if self.ble:
             try:
+                try:
+                    # Maak de TX-queue leeg zodat STOP-info direct doorkomt
+                    if hasattr(self.ble, 'clear_tx_backlog'):
+                        self.ble.clear_tx_backlog()
+                except Exception:
+                    pass
                 # Consolidate all test stop information into ONE BLE notification
                 consolidated_stop_data = {
                     # Status information (replaces _send_status call)
                     "state": self.current_state,
-                    "pct": pct,
+                    "pct": (pct if self.sensor_valid else None),
                     "ready": self.ready,
                     "test_active": False,
                     "current_level_mm": self.current_level if self.sensor_valid else None,
@@ -913,6 +928,7 @@ class WaterModule:
                     "ema_mm": self.ema_level if self.sensor_valid else None,
                     "obs_min": self.cfg["min_mm"],
                     "obs_max": self.cfg["max_mm"],
+                    "sensor_valid": bool(self.sensor_valid),
                     
                     # Test stop event information
                     "evt": "test_stopped",  # Special event type for dashboard
@@ -933,7 +949,12 @@ class WaterModule:
                 }
                 
                 log("info", f"[TRACE] Sending CONSOLIDATED test stop notification")
-                self.ble.notify(json.dumps(consolidated_stop_data))
+                payload = json.dumps(consolidated_stop_data)
+                if hasattr(self.ble, 'notify_priority'):
+                    # Stuur met prioriteit zodat stop-event niet achteraan in de queue belandt
+                    self.ble.notify_priority(payload)
+                else:
+                    self.ble.notify(payload)
                 log("info", f"[TRACE] stop_test() COMPLETED - final state: {self.current_state}, level: {self.current_level}")
             except Exception as e:
                 log("error", f"Failed to send consolidated test stop notification: {e}")

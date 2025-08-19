@@ -78,6 +78,7 @@
       <button class="cmd" data-cmd="TEST START" disabled>TEST START</button>
       <button class="cmd" data-cmd="TEST START PIPE" disabled>TEST START PIPE</button>
       <button class="cmd btn-amber" data-cmd="TEST START PIPE OUT" disabled title="Pipeline test met outputs vrijgegeven (alleen veilig in testomgeving)">TEST PIPE OUT</button>
+      <button class="cmd" data-cmd="TEST FAST" disabled title="Versnelde testzaagtand (8s periode)">TEST FAST</button>
       <button class="cmd" data-cmd="TEST STOP" disabled>TEST STOP</button>
       <button class="cmd" data-cmd="TEST?" disabled>TEST?</button>
     </div>
@@ -98,7 +99,10 @@
   </div>
 
   <div class="card expert" id="cfgCard">
-    <strong>Laatst ontvangen CFG/INFO</strong>
+    <strong>Laatst ontvangen INFO</strong>
+    <pre id="infoDump">—</pre>
+    <div style="height:8px"></div>
+    <strong>Laatst ontvangen CFG</strong>
     <pre id="cfgDump">—</pre>
   </div>
 

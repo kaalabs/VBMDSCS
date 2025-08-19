@@ -23,6 +23,7 @@
     stepBack: document.getElementById('stepBack'),
     stepCancel: document.getElementById('stepCancel'),
     stepNext: document.getElementById('stepNext'),
+    infoDump: document.getElementById('infoDump'),
     cfgDump: document.getElementById('cfgDump'),
     log: document.getElementById('log'),
     ema: document.getElementById('ema'),
@@ -37,25 +38,33 @@
   };
 
   let device=null, server=null, rxChar=null, txChar=null, buffer='';
-  // Serialize BLE writes to avoid 'GATT operation already in progress'
-  let writeChain = Promise.resolve();
+  
+  // Robuuste BLE communicatie
+  let writeQueue = [];
+  let isWriting = false;
   let reconnectTimer = null;
-  // Polling timer placeholder (kept to avoid ReferenceErrors in existing logic)
-  let testPollTimer = null; // not used for periodic INFO? anymore
+  let testPollTimer = null;
+  let statusPollTimer = null;
   let isExpert = false;
   let lastState = null, lastPct = null, lastReady = null;
   let testActive = false;
   let lastTestActive = null;
-  let currentTestId = null;  // Track current test session ID
+  let currentTestId = null;
+  
   // Robustness controls
-  let preferTestStream = false;    // When true, ignore non-test state/pct for UI
-  let lastTestMsgTs = 0;           // ms timestamp of last test message
+  let preferTestStream = false;
+  let lastTestMsgTs = 0;
   const TEST_INACTIVE_DEBOUNCE_MS = 1500;
-  // Sequence tracking to drop out-of-order frames
   let lastSeqStatus = -1;
   let lastSeqTest = -1;
+  
+  // BLE timeout en retry instellingen
+  const BLE_WRITE_TIMEOUT_MS = 5000;
+  const BLE_RETRY_DELAY_MS = 1000;
+  const MAX_RETRIES = 3;
 
   function now() { return new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+  
   function log(line, kind) {
     const div = document.createElement('div');
     if (kind === 'error') div.style.color = '#991b1b';
@@ -66,445 +75,817 @@
     while (ui.log.children.length > 300) ui.log.removeChild(ui.log.lastChild);
   }
 
-  function exportLog(){
-    const lines = Array.from(ui.log.children).reverse().map(n => n.textContent);
-    const blob = new Blob([lines.join('\n')], {type: 'text/plain'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = 'watertank_log.txt'; a.click();
-    URL.revokeObjectURL(url);
-  }
-
   function setConn(state) {
     ui.connBadge.textContent = state;
     ui.connBadge.className = 'badge ' + (state === 'connected' ? 'b-green' : 'b-gray');
-    updateConnButtons(state === 'connected');
+    
+    // Update connection buttons
+    ui.btnConnect.disabled = (state === 'connected');
+    ui.btnDisconnect.disabled = (state !== 'connected');
+    
     // Reset UI indicators when not connected
     if (state !== 'connected') {
-      lastState = null; lastPct = null; lastReady = null;
+      if (statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
+      lastState = null; 
+      lastPct = null; 
+      lastReady = null;
       setStateBadge('—');
       setReadyBadge(null);
       updateGauge(null);
-      try { ui.cfgDump.textContent = '—'; } catch(e) {}
-    }
-  }
-
-  function updateConnButtons(isConnected){
-    ui.btnConnect.disabled = !!isConnected;
-    ui.btnDisconnect.disabled = !isConnected;
-  }
-
-  function setStateBadge(st) {
-    const map = { OK: 'b-green', LOW: 'b-yellow', BOTTOM: 'b-red', FAULT: 'b-red' };
-    ui.stateBadge.textContent = st || '—';
-    ui.stateBadge.className = 'badge ' + (map[st] || 'b-gray');
-    ui.lvlFill.className = '';
-    if (st === 'OK') ui.lvlFill.classList.add('tone-green');
-    else if (st === 'LOW') ui.lvlFill.classList.add('tone-yellow');
-    else if (st === 'BOTTOM') ui.lvlFill.classList.add('tone-red');
-  }
-  function setUserHint(state, pct, ready){
-    let txt = '—';
-    let boxClass = 'user-hint';
-    let dotClass = 'uh-dot';
-    if (ready === false) { txt = 'Initialiseren…'; /* neutral styling - no additional classes */ }
-    else if (state === 'OK') { txt = 'Niveau OK'; boxClass += ' uh-ok'; dotClass += ' ok'; }
-    else if (state === 'LOW') { txt = 'Niveau laag — vul de tank bij'; boxClass += ' uh-low'; dotClass += ' low'; }
-    else if (state === 'BOTTOM') { txt = 'Tank leeg — machine beveiligd. Vul de tank.'; boxClass += ' uh-bottom'; dotClass += ' bottom'; }
-    else if (state === 'FAULT') { txt = 'Sensorstoring — controleer sensor/verbinding'; boxClass += ' uh-fault'; dotClass += ' fault'; }
-    ui.userHint.textContent = txt;
-    ui.userHintBox.className = boxClass;
-    ui.userHintDot.className = dotClass;
-  }
-  function setReadyBadge(val) {
-    if (val === null || val === undefined) { ui.readyBadge.textContent = '—'; ui.readyBadge.className = 'badge b-gray'; return; }
-    const r = !!val;
-    ui.readyBadge.textContent = r ? 'ready' : 'not-ready';
-    ui.readyBadge.className = 'badge ' + (r ? 'b-green' : 'b-gray');
-  }
-
-  function updateGauge(pct) {
-    const v = (typeof pct === 'number') ? Math.max(0, Math.min(100, pct)) : null;
-    ui.pct.textContent = (v == null) ? '—' : v.toFixed(1) + '%';
-    ui.lvlFill.style.width = (v == null) ? '0%' : v + '%';
-  }
-
-  function setTestIndicator(on){
-    const prev = testActive;
-    testActive = !!on;
-    if (testActive && !isExpert) ui.testIndicatorRow.classList.remove('hidden');
-    else ui.testIndicatorRow.classList.add('hidden');
-    
-    // Only on transition from true -> false, do a single aggressive reset
-    if (prev && !testActive) {
-      log('Test indicator cleared, performing aggressive reset');
-      if (testPollTimer) { clearInterval(testPollTimer); testPollTimer = null; log('Test poll timer cleared'); }
-      if (rxChar) {
-        setTimeout(() => { sendCmd('INFO?'); log('Forced INFO request after test indicator reset'); }, 120);
+      try { 
+        if (ui.infoDump) ui.infoDump.textContent = '—'; 
+        if (ui.cfgDump) ui.cfgDump.textContent = '—'; 
+      } catch(e) {}
+    } else {
+      // Start heartbeat polling (INFO?) elke 2s voor snellere UI updates
+      if (!statusPollTimer) {
+        statusPollTimer = setInterval(() => {
+          if (!testActive && rxChar) { // pauzeer tijdens test
+            sendCmd('INFO?').catch(() => {});
+          }
+        }, 2000);
       }
     }
   }
 
-  function* extractJson(stream){ let d=0,s=-1; for(let i=0;i<stream.length;i++){ const c=stream[i]; if(c==='{' ){ if(d===0) s=i; d++; } else if(c==='}'){ d--; if(d===0 && s!==-1){ yield stream.slice(s,i+1); s=-1; } } } }
-
-  function enableCmds(on) { ui.cmds.forEach(b => b.disabled = !on); ui.btnAutoCal.disabled = !on; }
-  function applyMode(){
-    isExpert = !!ui.modeExpert.checked;
-    // persist
-    try { localStorage.setItem('wt_mode', isExpert ? 'expert' : 'user'); } catch(e){}
-    // toggle expert-only sections, maar respecteer de 'hidden' van het stappenpaneel
-    document.querySelectorAll('.expert').forEach(el => {
-      if (el.id === 'stepsPanel') return; // beheerd via open/closeSteps
-      if (isExpert) el.classList.remove('hidden'); else el.classList.add('hidden');
-    });
-    // toggle user-only sections
-    document.querySelectorAll('.user').forEach(el => {
-      if (isExpert) el.classList.add('hidden'); else el.classList.remove('hidden');
-    });
-    // Bij modewissel de hint updaten met laatste bekende waarden
-    setUserHint(lastState, lastPct, lastReady);
-    setTestIndicator(testActive);
-  }
-  async function sendCmd(txt){
-    if(!rxChar) { log('Niet verbonden', 'error'); return; }
-    try{
-      // Use CRLF to maximize compatibility
-      let payload = txt;
-      if (!payload.endsWith('\n')) payload += '\n';
-      if (!payload.endsWith('\r\n')) payload = payload.replace(/\n$/,'\r\n');
-      // Chain writes and ensure the chain never stays rejected
-      writeChain = writeChain
-        .then(async () => {
-          await rxChar.writeValue(new TextEncoder().encode(payload));
-          // tiny pacing to give BLE stack room between ops
-          await new Promise(r => setTimeout(r, 20));
-        })
-        .catch(() => {});
-      await writeChain; // await current op completion
-      log('> '+txt, 'send');
-    }catch(e){
-      log('Commando versturen faalde: ' + (e.message||e), 'error');
+  // Robuuste BLE write functie met timeout en retry
+  async function robustWrite(data, retries = 0) {
+    if (!rxChar) {
+      throw new Error('Niet verbonden');
+    }
+    
+    try {
+      // Timeout wrapper
+      const writePromise = rxChar.writeValue(new TextEncoder().encode(data + '\n'));
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Write timeout')), BLE_WRITE_TIMEOUT_MS)
+      );
+      
+      await Promise.race([writePromise, timeoutPromise]);
+      log(`[BLE] Verzonden: ${data}`, 'send');
+      return true;
+      
+    } catch (error) {
+      log(`[BLE] Write fout (poging ${retries + 1}): ${error.message}`, 'error');
+      
+      if (retries < MAX_RETRIES) {
+        log(`[BLE] Retry over ${BLE_RETRY_DELAY_MS}ms...`, 'warn');
+        await new Promise(resolve => setTimeout(resolve, BLE_RETRY_DELAY_MS));
+        return robustWrite(data, retries + 1);
+      } else {
+        throw new Error(`Write mislukt na ${MAX_RETRIES} pogingen: ${error.message}`);
+      }
     }
   }
 
-  async function setupGatt(){
-    const svc = await server.getPrimaryService(UART_SERVICE);
-    txChar = await svc.getCharacteristic(UART_TX);
-    rxChar = await svc.getCharacteristic(UART_RX);
-    await txChar.startNotifications();
-    txChar.addEventListener('characteristicvaluechanged', onNotify);
+  // Queue-based write systeem
+  async function processWriteQueue() {
+    if (isWriting || writeQueue.length === 0) return;
+    
+    isWriting = true;
+    
+    while (writeQueue.length > 0) {
+      const { data, resolve, reject } = writeQueue.shift();
+      
+      try {
+        await robustWrite(data);
+        resolve(true);
+      } catch (error) {
+        reject(error);
+      }
+      
+      // Kleine pauze tussen writes om GATT operaties te voorkomen
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    
+    isWriting = false;
   }
 
-  async function chooseAndConnect(){
-    // Gefilterde scan: toon alleen ons device op naam
-    const dev = await navigator.bluetooth.requestDevice({
-      filters: [
-        { name: BLE_NAME },
-        { namePrefix: BLE_NAME },
-      ],
-      optionalServices: [UART_SERVICE]
+  // Verbeterde sendCmd functie
+  async function sendCmd(cmd) {
+    if (!rxChar) {
+      log('Niet verbonden', 'error');
+      return false;
+    }
+    
+    return new Promise((resolve, reject) => {
+      writeQueue.push({ data: cmd, resolve, reject });
+      processWriteQueue();
     });
-    device = dev; device.addEventListener('gattserverdisconnected', onDisc);
-    server = await device.gatt.connect();
-    await setupGatt();
-    setConn('connected'); enableCmds(true);
-    log('Verbonden met ' + (device.name || 'apparaat'));
-    await sendCmd('INFO?'); await sendCmd('CFG?');
-    if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
   }
 
-  async function connect(){
-    try{
-      // Als we al een device hebben, probeer direct te verbinden zonder prompt
+  // Verbeterde connectie setup
+  async function setupGatt() {
+    try {
+      const service = await server.getPrimaryService(UART_SERVICE);
+      rxChar = await service.getCharacteristic(UART_RX);
+      txChar = await service.getCharacteristic(UART_TX);
+      
+      // Enable notifications met error handling
+      await txChar.startNotifications();
+      txChar.addEventListener('characteristicvaluechanged', onNotify);
+      
+      log('GATT setup voltooid');
+      return true;
+    } catch (error) {
+      log(`GATT setup mislukt: ${error.message}`, 'error');
+      throw error;
+    }
+  }
+
+  // Verbeterde device selection
+  async function chooseAndConnect() {
+    try {
+      const dev = await navigator.bluetooth.requestDevice({
+        filters: [
+          { name: BLE_NAME },
+          { namePrefix: BLE_NAME },
+        ],
+        optionalServices: [UART_SERVICE]
+      });
+      
+      device = dev;
+      device.addEventListener('gattserverdisconnected', onDisc);
+      
+      server = await device.gatt.connect();
+      await setupGatt();
+      
+      setConn('connected');
+      enableCmds(true);
+      
+      log('Verbonden met ' + (device.name || 'apparaat'));
+      
+      // Initial data request met retry
+      await sendCmdWithRetry('INFO?');
+      await sendCmdWithRetry('CFG?');
+      
+      if (reconnectTimer) {
+        clearInterval(reconnectTimer);
+        reconnectTimer = null;
+      }
+      
+      return true;
+    } catch (error) {
+      log(`Device selection mislukt: ${error.message}`, 'error');
+      throw error;
+    }
+  }
+
+  // Helper functie voor commando's met retry
+  async function sendCmdWithRetry(cmd, maxRetries = 2) {
+    for (let i = 0; i <= maxRetries; i++) {
+      try {
+        await sendCmd(cmd);
+        return true;
+      } catch (error) {
+        if (i === maxRetries) {
+          log(`Commando ${cmd} mislukt na ${maxRetries + 1} pogingen`, 'error');
+          throw error;
+        }
+        log(`Retry ${cmd} (${i + 1}/${maxRetries})`, 'warn');
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+  }
+
+  async function connect() {
+    try {
+      // Als we al een device hebben, probeer direct te verbinden
       if (device) {
-        // Zorg dat disconnect-listener staat
         device.removeEventListener && device.removeEventListener('gattserverdisconnected', onDisc);
         device.addEventListener('gattserverdisconnected', onDisc);
+        
         if (!device.gatt.connected) {
           try {
             server = await device.gatt.connect();
             await setupGatt();
-            setConn('connected'); enableCmds(true);
+            setConn('connected');
+            enableCmds(true);
             log('Opnieuw verbonden met ' + (device.name || 'apparaat'));
           } catch (e) {
-            // Fallback: device-object ongeldig; kies opnieuw via chooser
-            log('Herverbinden met bestaand device mislukt, open chooser…', 'warn');
-            device = null; server = null; rxChar = null; txChar = null;
+            log('Herverbinden mislukt, open device chooser...', 'warn');
+            device = null;
+            server = null;
+            rxChar = null;
+            txChar = null;
             await chooseAndConnect();
             return;
           }
         } else {
-          setConn('connected'); enableCmds(true);
+          setConn('connected');
+          enableCmds(true);
         }
-        await sendCmd('INFO?'); await sendCmd('CFG?');
-        if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+        
+        await sendCmdWithRetry('INFO?');
+        await sendCmdWithRetry('CFG?');
+        
+        if (reconnectTimer) {
+          clearInterval(reconnectTimer);
+          reconnectTimer = null;
+        }
         return;
       }
-      // Anders: vraag de gebruiker om een device te kiezen (zonder service-filter in advertentie)
-      // Sommige firmwares adverteren de service UUID niet in de advertising payload.
-      // Gebruik acceptAllDevices + optionalServices om later de UART service te openen.
+      
       await chooseAndConnect();
-    }catch(e){ log('Connectie mislukt: ' + (e.message||e), 'error'); }
-  }
-
-  async function reconnect(){
-    if (!device) return;
-    try{
-      if (!device.gatt.connected) {
-        // Workaround: some browsers need a tiny delay before reconnect
-        await delay(150);
-        server = await device.gatt.connect();
-        await setupGatt();
-        setConn('connected'); enableCmds(true);
-        log('Opnieuw verbonden met ' + (device.name || 'apparaat'));
-        await sendCmd('INFO?'); await sendCmd('CFG?');
-        if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
-      }
-    }catch(e){
-      log('Reconnect mislukt: ' + (e.message||e), 'warn');
-      // blijf proberen in de achtergrond zolang autoReconnect aan staat
-      if (ui.autoReconnect.checked && !reconnectTimer) reconnectTimer = setInterval(reconnect, 2000);
+    } catch (e) {
+      log('Connectie mislukt: ' + (e.message || e), 'error');
+      setConn('error');
     }
   }
 
-  async function disconnect(){ try{ if (device && device.gatt.connected) device.gatt.disconnect(); }catch(e){} }
+  async function reconnect() {
+    if (!device) return;
+    
+    try {
+      if (!device.gatt.connected) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        server = await device.gatt.connect();
+        await setupGatt();
+        setConn('connected');
+        enableCmds(true);
+        log('Opnieuw verbonden met ' + (device.name || 'apparaat'));
+        
+        await sendCmdWithRetry('INFO?');
+        await sendCmdWithRetry('CFG?');
+        
+        if (reconnectTimer) {
+          clearInterval(reconnectTimer);
+          reconnectTimer = null;
+        }
+      }
+    } catch (e) {
+      log('Reconnect mislukt: ' + (e.message || e), 'warn');
+      
+      if (ui.autoReconnect.checked && !reconnectTimer) {
+        reconnectTimer = setInterval(reconnect, 2000);
+      }
+    }
+  }
 
-  function onDisc(){
-    // Maak karakteristieken ongeldig zodat we bij reconnect alles opnieuw opzetten
-    rxChar = null; txChar = null; server = null;
+  async function disconnect() {
+    try {
+      if (device && device.gatt.connected) {
+        device.gatt.disconnect();
+      }
+    } catch (e) {
+      log('Disconnect error: ' + e.message, 'warn');
+    }
+  }
+
+  function onDisc() {
+    rxChar = null;
+    txChar = null;
+    server = null;
+    
+    // Clear write queue
+    writeQueue.forEach(({ reject }) => reject(new Error('Disconnected')));
+    writeQueue = [];
+    isWriting = false;
+    
+    // Reset test status
+    testActive = false;
+    lastTestActive = false;
+    preferTestStream = false;
+    currentTestId = null;
+    if (statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
+    
     enableCmds(false);
     setConn('idle');
-    log('Bluetooth disconnected', 'warn');
     setTestIndicator(false);
-    if (ui.autoReconnect.checked && device){
-      if (!reconnectTimer) reconnectTimer = setInterval(reconnect, 2000);
+    log('Bluetooth disconnected', 'warn');
+    
+    if (ui.autoReconnect.checked && device) {
+      if (!reconnectTimer) {
+        reconnectTimer = setInterval(reconnect, 2000);
+      }
       setTimeout(reconnect, 1000);
     }
   }
 
-  function onNotify(ev){
-    buffer += new TextDecoder().decode(ev.target.value);
-    for (const js of extractJson(buffer)){
-      try{
-        const o = JSON.parse(js);
-        log(`[BLE] Raw message received: ${js}`, 'warn');
-        const isTestEvent = (o.evt === 'test');
-        // Optional latency logging
-        // Log latency alleen als we een plausibele epoch-timestamp hebben
-        if ('ts_ms' in o || 'ts_epoch_ms' in o) {
-          try {
-            const epochMs = (o.ts_epoch_ms != null) ? Number(o.ts_epoch_ms) : Number(o.ts_ms);
-            // Alleen als het lijkt op epoch (>= ~2001 in ms) en in realistisch venster
-            if (!isNaN(epochMs) && epochMs > 1e12) {
-              const lag = Date.now() - epochMs;
-              if (lag > -2000 && lag < 120000) {
-                log(`[BLE] latency ${Math.round(lag)}ms`);
-              }
-            }
-          } catch {}
+  function onNotify(ev) {
+    try {
+      const data = new TextDecoder().decode(ev.target.value);
+      buffer += data;
+      
+      log(`[BLE] Raw data ontvangen: "${data}"`, 'warn');
+      
+      // Process complete JSON messages
+      const jsonMessages = extractJson(buffer);
+      log(`[BLE] ${jsonMessages.length} JSON berichten gevonden in buffer`, 'warn');
+      
+      for (const js of jsonMessages) {
+        try {
+          log(`[BLE] Probeer JSON te parsen: "${js}"`, 'warn');
+          const o = JSON.parse(js);
+          log(`[BLE] JSON succesvol geparsed: ${JSON.stringify(o)}`, 'warn');
+          
+          // Process message...
+          processMessage(o);
+          
+        } catch (parseError) {
+          log(`JSON parse fout: ${parseError.message}`, 'error');
+          log(`Problematische JSON: "${js}"`, 'error');
         }
-        // Drop out-of-order messages based on seq when present
-        if ('seq' in o) {
-          const s = Number(o.seq);
-          if (isTestEvent) {
-            if (lastSeqTest >= 0 && s < lastSeqTest) { log('Ignoring out-of-order TEST seq ' + s + ' < ' + lastSeqTest, 'warn'); continue; }
-            lastSeqTest = s;
-          } else {
-            if (lastSeqStatus >= 0 && s < lastSeqStatus) { log('Ignoring out-of-order STATUS seq ' + s + ' < ' + lastSeqStatus, 'warn'); continue; }
-            lastSeqStatus = s;
-          }
+      }
+      
+      // Buffer cleanup
+      const lc = buffer.lastIndexOf('}');
+      const lo = buffer.lastIndexOf('{');
+      if (lc > -1 && lc > lo) {
+        buffer = buffer.slice(lc + 1);
+      } else if (buffer.length > 2048) {
+        buffer = buffer.slice(-1024);
+      }
+      
+    } catch (error) {
+      log(`Notify error: ${error.message}`, 'error');
+    }
+  }
+
+  // Helper functie om JSON berichten te extraheren
+  function extractJson(buffer) {
+    const results = [];
+    let braceCount = 0;
+    let start = -1;
+    
+    for (let i = 0; i < buffer.length; i++) {
+      if (buffer[i] === '{') {
+        if (braceCount === 0) start = i;
+        braceCount++;
+      } else if (buffer[i] === '}') {
+        braceCount--;
+        if (braceCount === 0 && start !== -1) {
+          results.push(buffer.slice(start, i + 1));
+          start = -1;
         }
-        // During test, only apply state/pct from test stream to avoid mixed sources
-        const allowStatusApply = !preferTestStream || isTestEvent;
-        if ('state' in o && allowStatusApply) {
-          log(`[DASHBOARD] State update: ${o.state} (was: ${lastState})`, 'warn');
-          if ('DEBUG_test_level' in o) {
-            log(`[DASHBOARD] DEBUG - test_level: ${o.DEBUG_test_level}, current_level: ${o.DEBUG_current_level}, sensor_valid: ${o.DEBUG_sensor_valid}`, 'warn');
-          }
-          setStateBadge(o.state);
-          lastState = o.state;
+      }
+    }
+    
+    return results;
+  }
+
+  // Helper functie om berichten te verwerken
+  function processMessage(o) {
+    log(`[PROCESS] Verwerk bericht: ${JSON.stringify(o)}`, 'warn');
+    
+    const isTestEvent = (o.evt === 'test');
+    
+    // Sequence tracking
+    if ('seq' in o) {
+      const s = Number(o.seq);
+      if (isTestEvent) {
+        if (lastSeqTest >= 0 && s < lastSeqTest) {
+          log('Ignoring out-of-order TEST seq ' + s + ' < ' + lastSeqTest, 'warn');
+          return;
         }
-        if ('pct' in o && allowStatusApply) {
-          log(`[DASHBOARD] Pct update: ${o.pct}% (was: ${lastPct}%)`, 'warn');
-          updateGauge(o.pct);
-          lastPct = o.pct;
+        lastSeqTest = s;
+      } else {
+        if (lastSeqStatus >= 0 && s < lastSeqStatus) {
+          log('Ignoring out-of-order STATUS seq ' + s + ' < ' + lastSeqStatus, 'warn');
+          return;
         }
-        // Extra velden uit firmware tonen
-        if ('ready' in o) { setReadyBadge(o.ready); lastReady = o.ready; }
-        if ('ema_mm' in o) ui.ema.textContent = (o.ema_mm == null) ? '—' : Number(o.ema_mm).toFixed(1) + ' mm';
-        if ('obs_min' in o || 'obs_max' in o) {
-          const mn = (o.obs_min == null) ? '—' : Number(o.obs_min).toFixed(1);
-          const mx = (o.obs_max == null) ? '—' : Number(o.obs_max).toFixed(1);
-          ui.obs.textContent = mn + ' / ' + mx;
+        lastSeqStatus = s;
+      }
+    }
+    
+    // State updates - toon altijd ook tijdens test
+    if ('state' in o) {
+      log(`[DASHBOARD] State update: ${o.state} (was: ${lastState})`, 'warn');
+      setStateBadge(o.state);
+      lastState = o.state;
+    }
+    
+    if ('pct' in o) {
+      log(`[DASHBOARD] Pct update: ${o.pct}% (was: ${lastPct}%)`, 'warn');
+      // Als firmware None stuurt bij sensorfout, toon '—' en 0%
+      if (o.pct === null || typeof o.pct === 'undefined') {
+        updateGauge(null);
+        lastPct = null;
+      } else {
+        updateGauge(o.pct);
+        lastPct = o.pct;
+      }
+    }
+    
+    // Extra UI velden
+    if ('ema_mm' in o) {
+      try { ui.ema.textContent = (o.ema_mm == null ? '—' : Number(o.ema_mm).toFixed(1)); } catch(e) {}
+    }
+    if ('obs_min' in o || 'obs_max' in o) {
+      const mn = ('obs_min' in o) ? o.obs_min : '—';
+      const mx = ('obs_max' in o) ? o.obs_max : '—';
+      try { ui.obs.textContent = `${mn}..${mx}`; } catch(e) {}
+    }
+    
+    // Ready status
+    if ('ready' in o) {
+      log(`[DASHBOARD] Ready update: ${o.ready}`, 'warn');
+      setReadyBadge(o.ready);
+      lastReady = o.ready;
+    }
+    
+    // Test events
+    if (o.evt === 'test') {
+      log(`[TEST] Test event ontvangen`, 'warn');
+      preferTestStream = true;
+      lastTestMsgTs = Date.now();
+      
+      if ('test_data_id' in o) {
+        if (currentTestId === null || o.test_data_id >= currentTestId) {
+          currentTestId = o.test_data_id;
         }
-        // Update user hint op basis van laatste bekende state
-        setUserHint(lastState, lastPct, lastReady);
-        // Test events/status
-        if (o.evt === 'test') {
-          // Any test event implies active test stream; prefer it for UI
+      }
+    }
+    
+    // Test status - verbeterde handling
+    if ('test_active' in o) {
+      const active = !!o.test_active;
+      log(`[TEST] Test active update: ${active}`, 'warn');
+      if (lastTestActive !== active) {
+        log('TEST active: ' + (active ? 'yes' : 'no'));
+        lastTestActive = active;
+        testActive = active; // Update globale testActive variabele
+        
+        if (active) {
           preferTestStream = true;
           lastTestMsgTs = Date.now();
-          // Check if this is from the current test session
-          if ('test_data_id' in o) {
-            // Accept equal or newer sessions; update when a newer id arrives
-            if (currentTestId === null || o.test_data_id >= currentTestId) {
-              if (currentTestId !== o.test_data_id) {
-                currentTestId = o.test_data_id;
-                log('Switched to test session ' + currentTestId);
-              }
-              log('TEST: ' + (o.msg || JSON.stringify(o)), 'warn');
-            } else {
-              log('Ignoring old test data from session ' + o.test_data_id + ' (current: ' + currentTestId + ')', 'warn');
-              continue;
-            }
-          } else {
-            // No test ID, process normally
-            log('TEST: ' + (o.msg || JSON.stringify(o)), 'warn');
-          }
-        }
-        if (o.evt === 'test_stopped') {
-          log('TEST STOPPED: ' + (o.msg || JSON.stringify(o)), 'warn');
-          
-          // COMPLETE DASHBOARD RESET - Clear all old data
-          log('Performing complete dashboard reset after test stop');
-          
-          // Clear all test-related variables
-          testActive = false;
-          currentTestId = null;  // Reset test session ID
-          if (testPollTimer) {
-            clearInterval(testPollTimer);
-            testPollTimer = null;
-          }
-          
-          // Force update the dashboard with real sensor values
-          if ('current_state' in o) { 
-            setStateBadge(o.current_state); 
-            lastState = o.current_state; 
-          }
-          if ('current_pct' in o) { 
-            updateGauge(o.current_pct); 
-            lastPct = o.current_pct; 
-          }
-          
-          // Update user hint immediately
-          setUserHint(lastState, lastPct, lastReady);
-          
-          // Clear test indicator
+          setTestIndicator(true);
+          // Heartbeat pauzeren tijdens test
+          // (timer blijft bestaan maar INFO? wordt niet verstuurd zolang testActive=true)
+        } else {
+          // Test gestopt - reset
+          preferTestStream = false;
+          currentTestId = null;
           setTestIndicator(false);
-          
-          // Force clear any lingering test data
-          setTimeout(() => {
-            if (rxChar) {
-              sendCmd('INFO?');
-              log('Forced INFO request after dashboard reset');
-            }
-          }, 200);
+          // Na stoppen direct een INFO? forceren voor snelle UI sync
+          try { sendCmd('INFO?'); } catch(e) {}
+          log('Test gestopt - alle test indicatoren gereset');
         }
-        if (o.evt === 'sys') {
-          log('SYS: ' + (o.msg || JSON.stringify(o)) + (o.err ? (' err=' + o.err) : ''), 'warn');
-        }
-        if ('test_active' in o) {
-          const active = !!o.test_active;
-          if (lastTestActive !== active) {
-            log('TEST active: ' + (active ? 'yes' : 'no'));
-            lastTestActive = active;
-          }
-          if (active) {
-            preferTestStream = true;
-            lastTestMsgTs = Date.now();
-          } else {
-            // Debounce switching off to avoid flapping on mixed messages
-            const nowTs = Date.now();
-            if (nowTs - lastTestMsgTs > TEST_INACTIVE_DEBOUNCE_MS) {
-              preferTestStream = false;
-            } else {
-              // Ignore transient inactive indications while test messages are recent
-              log('Ignoring transient test inactive due to debounce window', 'warn');
-            }
-          }
-          // Update test ID if provided
-          if ('test_data_id' in o) {
-            currentTestId = o.test_data_id;
-            log('Test session ID: ' + currentTestId);
-          }
-          setTestIndicator(active);
-        }
-        // Check for test_data_active flag
-        if ('test_data_active' in o) {
-          const dataActive = !!o.test_data_active;
-          log('TEST data generation: ' + (dataActive ? 'active' : 'stopped'));
-          if (!dataActive) {
-            // Force clear any test-related display elements
-            log('Test data generation stopped, clearing test display');
-          }
-        }
-        // Toon expliciet CFG en INFO responses in het paneel (ook als er 'state' in zit)
-        const isCfg = !isTestEvent && (('uart_port' in o) || ('uart_rx' in o) || ('uart_tx' in o)
-          || ('min_mm' in o) || ('max_mm' in o) || ('timeout_ms' in o) || ('sample_hz' in o)
-          || ('hysteresis_pct' in o) || ('low_pct' in o) || ('bottom_pct' in o)
-          || ('allow_pump_at_low' in o) || ('interlock_active' in o) || ('use_pump_ok' in o) || ('use_heater_ok' in o)
-          // Also treat BLE identity fields as CFG so we always render the config dump
-          || ('ble_enabled' in o) || ('ble_name' in o));
-        const isInfo = !isTestEvent && (('cal_empty_mm' in o) || ('cal_full_mm' in o));
-        if (isCfg || isInfo) {
-          try {
-            ui.cfgDump.textContent = JSON.stringify(o, null, 2);
-          } catch (e) {
-            ui.cfgDump.textContent = String(o);
-          }
-          log('CFG/INFO ontvangen');
-        }
-      }catch{}
+      }
+      
+      if ('test_data_id' in o) {
+        currentTestId = o.test_data_id;
+        log('Test session ID: ' + currentTestId);
+      }
     }
-    const lc = buffer.lastIndexOf('}');
-    const lo = buffer.lastIndexOf('{');
-    if (lc > -1 && lc > lo) buffer = buffer.slice(lc + 1); else if (buffer.length > 2048) buffer = buffer.slice(-1024);
+    
+    // Test stop event handling
+    if (o.evt === 'test_stopped') {
+      log('TEST STOPPED event ontvangen', 'warn');
+      testActive = false;
+      lastTestActive = false;
+      preferTestStream = false;
+      currentTestId = null;
+      setTestIndicator(false);
+      log('Test gestopt via event - alle indicatoren gereset');
+    }
+    
+    // Config / Info dumps
+    const isCfg = !isTestEvent && (
+      ('uart_port' in o) || ('uart_rx' in o) || ('uart_tx' in o) ||
+      ('min_mm' in o) || ('max_mm' in o) || ('timeout_ms' in o) || ('sample_hz' in o) ||
+      ('hysteresis_pct' in o) || ('low_pct' in o) || ('bottom_pct' in o) ||
+      ('allow_pump_at_low' in o) || ('interlock_active' in o) || ('use_pump_ok' in o) || ('use_heater_ok' in o) ||
+      ('ble_enabled' in o) || ('ble_name' in o)
+    );
+    const isInfo = !isTestEvent && (('cal_empty_mm' in o) || ('cal_full_mm' in o));
+    if (isInfo) {
+      try { if (ui.infoDump) ui.infoDump.textContent = JSON.stringify(o, null, 2); } catch (e) { if (ui.infoDump) ui.infoDump.textContent = String(o); }
+    } else if (isCfg) {
+      try { if (ui.cfgDump) ui.cfgDump.textContent = JSON.stringify(o, null, 2); } catch (e) { if (ui.cfgDump) ui.cfgDump.textContent = String(o); }
+    }
+    
+    // Update user hint
+    log(`[HINT] Update user hint met: state=${lastState}, pct=${lastPct}, ready=${lastReady}`, 'warn');
+    setUserHint(lastState, lastPct, lastReady);
+    
+    log(`[PROCESS] Bericht verwerking voltooid`, 'warn');
+  }
+
+  function enableCmds(on) { 
+    ui.cmds.forEach(b => b.disabled = !on); 
+    ui.btnAutoCal.disabled = !on; 
+  }
+
+  function setStateBadge(st) {
+    log(`[UI] setStateBadge aangeroepen met: ${st}`, 'warn');
+    const map = { OK: 'b-green', LOW: 'b-yellow', BOTTOM: 'b-red', FAULT: 'b-red' };
+    ui.stateBadge.textContent = st || '—';
+    ui.stateBadge.className = 'badge ' + (map[st] || 'b-gray');
+    // Kleur van de vullingsbalk koppelen aan status
+    let tone = '';
+    if (st === 'OK') tone = 'tone-green';
+    else if (st === 'LOW') tone = 'tone-yellow';
+    else if (st === 'BOTTOM' || st === 'FAULT') tone = 'tone-red';
+    ui.lvlFill.className = tone;
+    // Inline kleur zetten om CSS-specificiteit van .bar > div te overrulen
+    let bg = 'var(--blue)';
+    if (st === 'OK') bg = 'var(--good)';
+    else if (st === 'LOW') bg = 'var(--warn)';
+    else if (st === 'BOTTOM' || st === 'FAULT') bg = 'var(--bad)';
+    ui.lvlFill.style.background = bg;
+    log(`[UI] State badge bijgewerkt naar: ${st}`, 'warn');
+  }
+
+  function setReadyBadge(ready) {
+    log(`[UI] setReadyBadge aangeroepen met: ${ready}`, 'warn');
+    ui.readyBadge.textContent = ready === null ? '—' : (ready ? 'READY' : 'NOT READY');
+    ui.readyBadge.className = 'badge ' + (ready === null ? 'b-gray' : (ready ? 'b-green' : 'b-red'));
+    log(`[UI] Ready badge bijgewerkt naar: ${ready}`, 'warn');
+  }
+
+  function updateGauge(pct) {
+    log(`[UI] updateGauge aangeroepen met: ${pct}`, 'warn');
+    if (pct === null) {
+      ui.pct.textContent = '—';
+      ui.lvlFill.style.width = '0%';
+      log(`[UI] Gauge gereset naar leeg`, 'warn');
+      return;
+    }
+    
+    // Zorg ervoor dat de balk altijd wordt getoond
+    ui.pct.textContent = pct.toFixed(1) + '%';
+    ui.lvlFill.style.width = pct + '%';
+    
+    // Debug logging
+    log(`[GAUGE] Waterniveau bijgewerkt: ${pct.toFixed(1)}%`, 'warn');
+    log(`[UI] Gauge bijgewerkt: percentage=${pct.toFixed(1)}%, balk-breedte=${pct}%`, 'warn');
+  }
+
+  function setUserHint(state, pct, ready) {
+    log(`[UI] setUserHint aangeroepen met: state=${state}, pct=${pct}, ready=${ready}`, 'warn');
+    
+    // Toon altijd de hint als er percentage data is, ook tijdens tests
+    if (pct === null && !state) {
+      log(`[UI] Geen data beschikbaar, verberg user hint`, 'warn');
+      ui.userHintRow.classList.add('hidden');
+      return;
+    }
+    
+    let txt = '—';
+    let boxClass = 'user-hint';
+    let dotClass = 'uh-dot';
+    
+    if (ready === false) { 
+      txt = 'Initialiseren…'; 
+      // neutral styling - no additional classes
+    } else if (state === 'OK') { 
+      txt = 'Niveau OK'; 
+      boxClass += ' uh-ok'; 
+      dotClass += ' ok'; 
+    } else if (state === 'LOW') { 
+      txt = 'Niveau laag — vul de tank bij'; 
+      boxClass += ' uh-low'; 
+      dotClass += ' low'; 
+    } else if (state === 'BOTTOM') { 
+      txt = 'Tank leeg — machine beveiligd. Vul de tank.'; 
+      boxClass += ' uh-bottom'; 
+      dotClass += ' bottom'; 
+    } else if (state === 'FAULT') { 
+      txt = 'Sensorstoring — controleer sensor/verbinding'; 
+      boxClass += ' uh-fault'; 
+      dotClass += ' fault'; 
+    } else if (pct !== null) {
+      // Als er geen state is maar wel percentage, toon generieke tekst
+      txt = `Niveau: ${pct.toFixed(1)}%`;
+    }
+    
+    log(`[UI] User hint tekst: "${txt}"`, 'warn');
+    log(`[UI] User hint classes: box=${boxClass}, dot=${dotClass}`, 'warn');
+    
+    ui.userHint.textContent = txt;
+    ui.userHintBox.className = boxClass;
+    ui.userHintDot.className = dotClass;
+    ui.userHintRow.classList.remove('hidden');
+    
+    log(`[UI] User hint bijgewerkt en zichtbaar gemaakt`, 'warn');
+  }
+
+  function setTestIndicator(active) {
+    if (active) {
+      ui.testIndicatorRow.classList.remove('hidden');
+      // Behoud de originele styling
+    } else {
+      ui.testIndicatorRow.classList.add('hidden');
+    }
+  }
+
+  function applyMode() {
+    isExpert = ui.modeExpert.checked;
+    try { localStorage.setItem('wt_mode', isExpert ? 'expert' : 'normal'); } catch(e){}
+    
+    // Toggle expert-only UI elements
+    const expertElements = document.querySelectorAll('.expert');
+    expertElements.forEach(el => {
+      if (el.id === 'stepsPanel') return; // beheerd via open/closeSteps
+      if (isExpert) {
+        el.classList.remove('hidden');
+      } else {
+        el.classList.add('hidden');
+      }
+    });
+    
+    // Toggle user-only UI elements
+    const userElements = document.querySelectorAll('.user');
+    userElements.forEach(el => {
+      if (isExpert) {
+        el.classList.add('hidden');
+      } else {
+        el.classList.remove('hidden');
+      }
+    });
+    
+    // Bij modewissel de hint updaten met laatste bekende waarden
+    setUserHint(lastState, lastPct, lastReady);
+    setTestIndicator(testActive);
+  }
+
+  function exportLog() {
+    const lines = Array.from(ui.log.children).reverse().map(n => n.textContent);
+    const blob = new Blob([lines.join('\n')], {type: 'text/plain'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; 
+    a.download = 'watertank_log.txt'; 
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   // Inline Auto-Cal flow
   let step = 0; // 0=closed, 1=FULL, 2=EMPTY
-  function delay(ms){ return new Promise(r=>setTimeout(r, ms)); }
-  function openSteps(){ if(!rxChar){ log('Niet verbonden', 'warn'); return; } step = 1; ui.stepsPanel.classList.remove('hidden'); ui.stepBack.disabled = true; ui.stepNext.textContent = 'Markeer FULL'; ui.stepBadge.textContent = 'Stap 1/2'; ui.stepMsg.textContent = 'Vul de tank volledig en wacht tot het niveau stabiel is. Klik op “Markeer FULL”.'; enableCmds(false); ui.btnAutoCal.disabled = true; }
-  function closeSteps(){ step = 0; ui.stepsPanel.classList.add('hidden'); enableCmds(true); }
-  async function nextStep(){ if(step===1){ await sendCmd('INFO?'); await delay(200); await sendCmd('CAL FULL'); log('CAL FULL verstuurd'); step=2; ui.stepBack.disabled=false; ui.stepNext.textContent='Markeer EMPTY'; ui.stepBadge.textContent='Stap 2/2'; ui.stepMsg.textContent='Leeg de tank tot minimaal niveau en plaats hem terug. Klik op “Markeer EMPTY”.'; } else if(step===2){ await sendCmd('INFO?'); await delay(200); await sendCmd('CAL EMPTY'); log('CAL EMPTY verstuurd'); await delay(300); await sendCmd('CFG?'); log('Auto-calibratie gereed. Waarden opgeslagen.'); closeSteps(); } }
-  function backStep(){ if(step===2){ step=1; ui.stepBack.disabled = true; ui.stepNext.textContent = 'Markeer FULL'; ui.stepBadge.textContent = 'Stap 1/2'; ui.stepMsg.textContent = 'Vul de tank volledig en wacht tot het niveau stabiel is. Klik op “Markeer FULL”.'; } }
-  function cancelSteps(){ log('Auto-calibratie geannuleerd.'); closeSteps(); }
+  
+  function delay(ms) { 
+    return new Promise(r => setTimeout(r, ms)); 
+  }
+  
+  function openSteps() { 
+    if (!rxChar) { 
+      log('Niet verbonden', 'warn'); 
+      return; 
+    } 
+    step = 1; 
+    ui.stepsPanel.classList.remove('hidden'); 
+    ui.stepBack.disabled = true; 
+    ui.stepNext.textContent = 'Markeer FULL'; 
+    ui.stepBadge.textContent = 'Stap 1/2'; 
+    ui.stepMsg.textContent = 'Vul de tank volledig en wacht tot het niveau stabiel is. Klik op "Markeer FULL".'; 
+    enableCmds(false); 
+    ui.btnAutoCal.disabled = true; 
+  }
+  
+  function closeSteps() { 
+    step = 0; 
+    ui.stepsPanel.classList.add('hidden'); 
+    enableCmds(true); 
+  }
+  
+  async function nextStep() { 
+    if (step === 1) { 
+      await sendCmd('INFO?'); 
+      await delay(200); 
+      await sendCmd('CAL FULL'); 
+      log('CAL FULL verstuurd'); 
+      step = 2; 
+      ui.stepBack.disabled = false; 
+      ui.stepNext.textContent = 'Markeer EMPTY'; 
+      ui.stepBadge.textContent = 'Stap 2/2'; 
+      ui.stepMsg.textContent = 'Leeg de tank tot minimaal niveau en plaats hem terug. Klik op "Markeer EMPTY".'; 
+    } else if (step === 2) { 
+      await sendCmd('INFO?'); 
+      await delay(200); 
+      await sendCmd('CAL EMPTY'); 
+      log('CAL EMPTY verstuurd'); 
+      await delay(300); 
+      await sendCmd('CFG?'); 
+      log('Auto-calibratie gereed. Waarden opgeslagen.'); 
+      closeSteps(); 
+    } 
+  }
+  
+  function backStep() { 
+    if (step === 2) { 
+      step = 1; 
+      ui.stepBack.disabled = true; 
+      ui.stepNext.textContent = 'Markeer FULL'; 
+      ui.stepBadge.textContent = 'Stap 1/2'; 
+      ui.stepMsg.textContent = 'Vul de tank volledig en wacht tot het niveau stabiel is. Klik op "Markeer FULL".'; 
+    } 
+  }
+  
+  function cancelSteps() { 
+    log('Auto-calibratie geannuleerd.'); 
+    closeSteps(); 
+  }
 
   // Bindings
   ui.btnConnect.addEventListener('click', connect);
   ui.btnDisconnect.addEventListener('click', disconnect);
   ui.cmds.forEach(b => b.addEventListener('click', async () => {
     const cmd = b.dataset.cmd;
+    // Post-refresh mapping per commando
+    const POST_REFRESH = {
+      'INFO?': [],
+      'CFG?': [],
+      'TEST?': [],
+      'TEST START': ['TEST?','INFO?'],
+      'TEST START PIPE': ['TEST?','INFO?'],
+      'TEST START PIPE OUT': ['TEST?','INFO?'],
+      'TEST STOP': ['TEST?','INFO?'],
+      'TEST FAST': ['TEST?'],
+      'CAL FULL': ['INFO?','CFG?'],
+      'CAL EMPTY': ['INFO?','CFG?'],
+      'CAL CLEAR': ['INFO?','CFG?'],
+      'CFG RESET': ['CFG?','INFO?']
+    };
+    
     // Do not poll INFO? during test; rely solely on test stream
     if (cmd === 'TEST START' || cmd === 'TEST START PIPE' || cmd === 'TEST START PIPE OUT') {
-      if (testPollTimer) { clearInterval(testPollTimer); testPollTimer = null; }
+      if (testPollTimer) { 
+        clearInterval(testPollTimer); 
+        testPollTimer = null; 
+      }
       setTestIndicator(true);
+      testActive = true;
+      lastTestActive = true;
     } else if (cmd === 'TEST STOP') {
-      if (testPollTimer) { clearInterval(testPollTimer); testPollTimer = null; }
+      if (testPollTimer) { 
+        clearInterval(testPollTimer); 
+        testPollTimer = null; 
+      }
       setTestIndicator(false);
+      testActive = false;
+      lastTestActive = false;
+      preferTestStream = false;
+      currentTestId = null;
+      log('Test gestopt via commando - alle indicatoren gereset');
     }
-    await sendCmd(cmd);
-    // After TEST START/STOP, request a quick confirmation snapshot
-    if (cmd.startsWith('TEST START') || cmd === 'TEST STOP') {
-      try {
-        await delay(120);
-        await sendCmd('TEST?');
-        await delay(120);
-        await sendCmd('INFO?');
-      } catch {}
+    
+    try {
+      await sendCmd(cmd);
+      
+      // Post-refresh flow voor relevantere/consistente UI updates
+      const followUps = POST_REFRESH[cmd] || [];
+      for (const f of followUps) {
+        try {
+          await delay(120);
+          await sendCmd(f);
+        } catch (e) {
+          log(`Post-refresh ${f} failed: ${e.message}`, 'warn');
+        }
+      }
+
+      // Specifieke betrouwbaarheid: bevestig TEST STOP binnen 1s anders retry 1x
+      if (cmd === 'TEST STOP') {
+        try {
+          await delay(800);
+          if (testActive === true || lastTestActive === true) {
+            log('TEST STOP lijkt niet doorgekomen, probeer opnieuw…', 'warn');
+            await sendCmd('TEST STOP');
+            await delay(200);
+            await sendCmd('TEST?');
+            await delay(200);
+            await sendCmd('INFO?');
+          }
+        } catch (e) {
+          log('Fallback TEST STOP retry faalde: ' + e.message, 'warn');
+        }
+      }
+    } catch (error) {
+      log(`Commando ${cmd} mislukt: ${error.message}`, 'error');
+      
+      // Als commando mislukt, reset test status als het TEST STOP was
+      if (cmd === 'TEST STOP') {
+        setTestIndicator(false);
+        testActive = false;
+        lastTestActive = false;
+        preferTestStream = false;
+        currentTestId = null;
+        log('Test status gereset na mislukt TEST STOP commando');
+      }
     }
   }));
+  
   ui.btnAutoCal.addEventListener('click', openSteps);
   ui.stepNext.addEventListener('click', nextStep);
   ui.stepBack.addEventListener('click', backStep);
   ui.stepCancel.addEventListener('click', cancelSteps);
   ui.modeExpert.addEventListener('change', applyMode);
-  ui.btnCfgReset.addEventListener('click', () => { if (confirm('Weet je zeker dat je de configuratie wilt resetten naar defaults?')) sendCmd('CFG RESET'); });
+  ui.btnCfgReset.addEventListener('click', () => { 
+    if (confirm('Weet je zeker dat je de configuratie wilt resetten naar defaults?')) {
+      sendCmd('CFG RESET').catch(e => log(`CFG RESET failed: ${e.message}`, 'error'));
+    }
+  });
   ui.btnExportLog.addEventListener('click', exportLog);
 
   // Init
-  setConn('idle'); setStateBadge('—'); setReadyBadge(null); updateGauge(null);
+  setConn('idle'); 
+  setStateBadge('—'); 
+  setReadyBadge(null); 
+  updateGauge(null);
   setTestIndicator(false);
+  
   // Restore mode
-  try { ui.modeExpert.checked = (localStorage.getItem('wt_mode') === 'expert'); } catch(e){}
+  try { 
+    ui.modeExpert.checked = (localStorage.getItem('wt_mode') === 'expert'); 
+  } catch(e){}
   applyMode();

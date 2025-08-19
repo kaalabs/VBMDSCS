@@ -82,9 +82,39 @@ def handle_command(cmd):
             "test_data_active": getattr(water_module, 'test_data_active', False),
             "test_pipeline": getattr(water_module, 'test_pipeline', False),
             "test_allow_outputs": getattr(water_module, 'test_allow_outputs', False),
-            "test_data_id": getattr(water_module, 'test_data_id', 0)
+            "test_data_id": getattr(water_module, 'test_data_id', 0),
+            "test_period_s": water_module.cfg.get("test_period_s", 20)
         }
         return ujson.dumps(test_status)
+    elif cmd.startswith("TEST PERIOD "):
+        # Dynamisch de sweep-periode aanpassen
+        try:
+            val = int(cmd.split()[-1])
+            if val < 2:
+                val = 2
+            if val > 120:
+                val = 120
+            water_module.cfg["test_period_s"] = val
+            # Reset starttijd zodat de nieuwe periode direct effect heeft
+            water_module.test_start_time = time.time()
+            # Forceer snelle feedback
+            try:
+                water_module._last_test_ble_ms = 0
+                water_module._generate_test_data(force_send=True)
+            except Exception:
+                pass
+            return f"Test period set to {val}s"
+        except Exception as e:
+            return f"Invalid period: {e}"
+    elif cmd == "TEST FAST":
+        water_module.cfg["test_period_s"] = 8
+        water_module.test_start_time = time.time()
+        try:
+            water_module._last_test_ble_ms = 0
+            water_module._generate_test_data(force_send=True)
+        except Exception:
+            pass
+        return "Test period set to 8s"
     elif cmd == "INFO?":
         # Retourneer statusinformatie als JSON (dashboard verwacht JSON).
         # Tijdens test: gebruik test-niveau; anders echte sensor.
@@ -92,20 +122,26 @@ def handle_command(cmd):
             # During test: use test level and state
             pct = water_module._update_level_state_from_level(water_module.test_level)
             current_level = water_module.test_level
+            sensor_valid = True
         else:
             # Normal mode: use real sensor data
             pct = water_module._update_level_state()
             current_level = water_module.current_level if water_module.sensor_valid else None
-            
+            sensor_valid = bool(water_module.sensor_valid)
+        
+        # Mask percentage when sensor is invalid to avoid fake 0%/100% flicker
+        pct_for_display = round(pct, 1) if sensor_valid else None
+        
         import ujson
         info_data = {
-            "pct": round(pct, 1),
+            "pct": pct_for_display,
             "state": water_module.current_state,
             "ready": water_module.ready,
             "cal_empty_mm": water_module.cfg.get("cal_empty_mm", 190.0),
             "cal_full_mm": water_module.cfg.get("cal_full_mm", 50.0),
             "test_active": water_module.test_active,
-            "current_level_mm": current_level
+            "current_level_mm": current_level,
+            "sensor_valid": sensor_valid
         }
         return ujson.dumps(info_data)
     elif cmd == "CFG?":
@@ -128,6 +164,11 @@ def handle_command(cmd):
         if water_module.sensor_valid and water_module.current_level is not None:
             water_module.cfg["cal_full_mm"] = water_module.current_level
             if save_config():
+                try:
+                    # Push immediate status update so dashboard refreshes promptly
+                    water_module._send_status()
+                except Exception:
+                    pass
                 return f"Full level calibrated to {water_module.current_level:.1f}mm"
             else:
                 return "Calibration set but failed to save config"
@@ -138,6 +179,10 @@ def handle_command(cmd):
         if water_module.sensor_valid and water_module.current_level is not None:
             water_module.cfg["cal_empty_mm"] = water_module.current_level
             if save_config():
+                try:
+                    water_module._send_status()
+                except Exception:
+                    pass
                 return f"Empty level calibrated to {water_module.current_level:.1f}mm"
             else:
                 return "Calibration set but failed to save config"
@@ -148,6 +193,10 @@ def handle_command(cmd):
         water_module.cfg["cal_full_mm"] = None
         water_module.cfg["cal_empty_mm"] = None
         if save_config():
+            try:
+                water_module._send_status()
+            except Exception:
+                pass
             return "Calibration cleared"
         else:
             return "Calibration cleared but failed to save config"
@@ -161,6 +210,10 @@ def handle_command(cmd):
             
             # Save the reset config
             if save_config():
+                try:
+                    water_module._send_status()
+                except Exception:
+                    pass
                 return f"Configuration reset to defaults (BLE name: {old_ble_name})"
             else:
                 return "Configuration reset but failed to save"
