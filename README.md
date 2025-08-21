@@ -1,3 +1,5 @@
+# *** NOT UNDER ACTIVE DEVELOPMENT: SWITCH TO VBMDSCS2 REPOSITORY FOR ACTIVE DEVELOPMENT ***
+
 # Domobar Control System
 
 Modulair digitaal besturingssysteem voor de **Vibiemme Domobar Standaard/Classic**.  
